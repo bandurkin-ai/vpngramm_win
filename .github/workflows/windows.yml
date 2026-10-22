@@ -1,0 +1,30 @@
+name: Windows build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - name: Tests
+        run: ./gradlew test --no-daemon
+      - name: Installer (MSI, EXE) and portable app
+        run: ./gradlew packageMsi packageExe createDistributable --no-daemon
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path build/compose/binaries/main/app/vpngramm -DestinationPath build/vpngramm-2.0.1-windows-portable.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vpngramm-windows
+          path: |
+            build/compose/binaries/main/msi/*.msi
+            build/compose/binaries/main/exe/*.exe
+            build/vpngramm-2.0.1-windows-portable.zip
