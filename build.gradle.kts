@@ -35,7 +35,7 @@ compose.desktop {
             targetFormats(TargetFormat.Msi, TargetFormat.Exe)
             packageName = "vpngramm"
             packageVersion = "2.0.1"
-            description = "vpngramm: установка и обслуживание своего VPN-сервера"
+            description = "vpngramm - own VPN server setup and management"
             vendor = "vpngramm"
             modules("java.naming", "jdk.crypto.ec", "java.sql", "jdk.unsupported")
             windows {

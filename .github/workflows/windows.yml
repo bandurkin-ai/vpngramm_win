@@ -16,14 +16,23 @@ jobs:
           java-version: 21
       - name: Tests
         run: ./gradlew test --no-daemon
-      - name: Installer (MSI, EXE) and portable app
-        run: ./gradlew packageMsi packageExe createDistributable --no-daemon
-      - name: Portable zip
+      - name: Portable app
         shell: pwsh
-        run: Compress-Archive -Path build/compose/binaries/main/app/vpngramm -DestinationPath build/vpngramm-2.0.1-windows-portable.zip
+        run: |
+          ./gradlew createDistributable --no-daemon
+          Compress-Archive -Path build/compose/binaries/main/app/vpngramm -DestinationPath build/vpngramm-2.0.1-windows-portable.zip
+      - name: Installer (MSI, EXE)
+        shell: pwsh
+        run: ./gradlew packageMsi packageExe --no-daemon --continue
+      - name: jpackage logs
+        if: failure()
+        shell: pwsh
+        run: Get-ChildItem -Recurse build/compose/logs -Filter *.txt | ForEach-Object { "=== $($_.FullName)"; Get-Content $_ }
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: vpngramm-windows
+          if-no-files-found: warn
           path: |
             build/compose/binaries/main/msi/*.msi
             build/compose/binaries/main/exe/*.exe
