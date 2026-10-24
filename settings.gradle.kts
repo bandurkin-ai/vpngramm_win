@@ -1,19 +1,17 @@
 pluginManagement {
     repositories {
-        gradlePluginPortal()
-        mavenCentral()
         google()
-        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+        mavenCentral()
+        gradlePluginPortal()
     }
 }
 dependencyResolutionManagement {
-    repositoriesMode.set(RepositoriesMode.PREFER_SETTINGS)
+    repositoriesMode.set(RepositoriesMode.FAIL_ON_PROJECT_REPOS)
     repositories {
-        // зеркало Maven Central на случай ограничений основного (429)
-        maven("https://maven-central.storage-download.googleapis.com/maven2/")
-        mavenCentral()
         google()
-        maven("https://maven.pkg.jetbrains.space/public/p/compose/dev")
+        mavenCentral()
     }
 }
 rootProject.name = "vpngramm"
+include(":app")
+include(":desktop")

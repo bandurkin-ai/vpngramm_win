@@ -1,0 +1,10 @@
+ARG BASE
+FROM ${BASE}
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y systemd systemd-sysv openssh-server sudo iproute2 dbus && \
+    rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && \
+    echo 'root:TestRootPw-123' | chpasswd && \
+    printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf && \
+    systemctl enable ssh || true
+STOPSIGNAL SIGRTMIN+3
+CMD ["/sbin/init"]

@@ -1,0 +1,10 @@
+FROM geerlingguy/docker-debian12-ansible:latest
+COPY debs /tmp/debs
+RUN cd /tmp/debs && need="" && for f in *.deb; do p=$(dpkg-deb -f "$f" Package); dpkg -s "$p" >/dev/null 2>&1 || need="$need $f"; done && \
+    echo "install:$need" && dpkg -i $need && rm -rf /tmp/debs && \
+    rm -f /etc/ssh/ssh_host_* && ssh-keygen -A && \
+    echo 'root:TestRootPw-123' | chpasswd && \
+    printf 'PermitRootLogin yes\nPasswordAuthentication yes\n' > /etc/ssh/sshd_config.d/50-cloud-init.conf && \
+    systemctl enable ssh
+STOPSIGNAL SIGRTMIN+3
+CMD ["/lib/systemd/systemd"]

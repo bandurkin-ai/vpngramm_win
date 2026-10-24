@@ -1,0 +1,5 @@
+<resources>
+    <style name="Theme.Hy2Setup" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">#FFFBF8FF</item>
+    </style>
+</resources>

@@ -1,0 +1,14 @@
+# Скрипты для сервера (bash) и исходники — всегда с LF, в том числе в копии на Windows:
+# с CRLF скрипты на сервере не запустятся
+* text=auto eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+# README для архива Windows — специально с CRLF (для Блокнота)
+desktop/README-windows.txt -text
+
+*.png binary
+*.ico binary
+*.ttf binary
+*.jar binary
+*.so binary
+*.zip binary
