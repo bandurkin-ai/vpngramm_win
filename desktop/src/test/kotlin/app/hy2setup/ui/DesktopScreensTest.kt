@@ -13,7 +13,6 @@ import app.hy2setup.TAB_CLOUD
 import app.hy2setup.TAB_HOME
 import app.hy2setup.TAB_SERVER
 import app.hy2setup.TAB_TOOLS
-import app.hy2setup.TAB_VPN
 import app.hy2setup.platform.DesktopPlatform
 import org.jetbrains.skia.EncodedImageFormat
 import org.junit.Assert.assertTrue
@@ -54,8 +53,6 @@ class DesktopScreensTest {
     @Test fun home() = shot("1-home", TAB_HOME)
     @Test fun homeDark() = shot("1-home", TAB_HOME, dark = true)
     @Test fun homeEmpty() = shot("1-home-empty", TAB_HOME, withProfile = false)
-    @Test fun vpn() = shot("1b-vpn", TAB_VPN)
-    @Test fun vpnEmpty() = shot("1b-vpn-empty", TAB_VPN, withProfile = false)
     @Test fun server() = shot("2-server", TAB_SERVER)
     @Test fun cloud() = shot("3-cloud", TAB_CLOUD)
     @Test fun tools() = shot("4-tools", TAB_TOOLS)

@@ -3,6 +3,7 @@ package app.hy2setup.ui
 import androidx.compose.ui.test.ExperimentalTestApi
 import androidx.compose.ui.test.captureToImage
 import androidx.compose.ui.test.onNodeWithContentDescription
+import androidx.compose.ui.test.onAllNodesWithText
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.isRoot
 import androidx.compose.ui.test.performClick
@@ -13,7 +14,6 @@ import app.hy2setup.ProfileVps
 import app.hy2setup.StableProfile
 import app.hy2setup.TAB_HOME
 import app.hy2setup.TAB_TOOLS
-import app.hy2setup.TAB_VPN
 import app.hy2setup.platform.DesktopPlatform
 import org.junit.Rule
 import org.junit.Test
@@ -52,15 +52,19 @@ class DesktopInteractionTest {
         save(onAllNodes(isRoot())[0].captureToImage(), "5-link-qr")
     }
 
+    /** В Windows-версии нет вкладки VPN: в нижнем меню четыре раздела. */
     @Test
-    fun vpnTabExplainsClients() = runDesktopComposeUiTest(540, 1000) {
-        val vm = model(TAB_VPN)
+    fun noVpnTab() = runDesktopComposeUiTest(540, 1000) {
+        val vm = model(TAB_HOME)
         setContent { Hy2Theme(dark = false, dynamic = false) { AppRoot(vm) } }
-        onNodeWithText("Встроенный VPN — в версии для Android").assertExists()
-        onNodeWithText("Подробнее").performClick()
+        onNodeWithText("VPN").assertDoesNotExist()
+        for (tab in listOf("Главная", "Сервер", "Облако", "Инструменты")) {
+            org.junit.Assert.assertTrue(tab, onAllNodesWithText(tab).fetchSemanticsNodes().isNotEmpty())
+        }
+        onNodeWithText("Инструменты").performClick()
         waitForIdle()
-        onNodeWithText("Установите Happ для Windows", substring = true).assertExists()
-        save(onAllNodes(isRoot())[0].captureToImage(), "5-vpn-howto")
+        onNodeWithText("Забыть пароли и токены").assertExists()
+        save(onAllNodes(isRoot())[0].captureToImage(), "5-tools-no-monitor")
     }
 
     @Test
@@ -68,7 +72,8 @@ class DesktopInteractionTest {
         val vm = model(TAB_TOOLS)
         setContent { Hy2Theme(dark = false, dynamic = false) { AppRoot(vm) } }
         onNodeWithText("Удалить с компьютера", substring = true).assertExists()
-        onNodeWithText("Есть в версии для Android").assertExists()
-        onNodeWithText("vpngramm v3.5", substring = true).assertExists()
+        // блока «Контроль серверов» в Windows-версии нет
+        onNodeWithText("Контроль серверов").assertDoesNotExist()
+        onNodeWithText("vpngramm v3.6.1", substring = true).assertExists()
     }
 }

@@ -51,7 +51,8 @@ data class TgParams(val port: Int, val secret: String, val front: String) {
 }
 
 /** VPS, на котором сейчас работает профиль. */
-data class ProfileVps(val id: String, val ip: String, val hostname: String)
+/** VPS профиля; [trafficLimitGb] — лимит трафика тарифа у OneProvider (ГБ в месяц), если известен. */
+data class ProfileVps(val id: String, val ip: String, val hostname: String, val trafficLimitGb: Double? = null)
 
 /**
  * Постоянный профиль «Комбайна+»: всё, что входит в ссылки. Пока профиль один и тот же,
@@ -195,7 +196,9 @@ data class StableProfile(
         put("realityShortId", realityShortId); put("realitySni", realitySni)
         put("createdAt", createdAt)
         cert?.let { put("cert", JSONObject().put("crt", it.crt).put("key", it.key).put("meta", it.meta).put("notAfter", it.notAfter)) }
-        vps?.let { put("vps", JSONObject().put("id", it.id).put("ip", it.ip).put("hostname", it.hostname)) }
+        vps?.let { v ->
+            put("vps", JSONObject().put("id", v.id).put("ip", v.ip).put("hostname", v.hostname).also { j -> v.trafficLimitGb?.let { j.put("limitGb", it) } })
+        }
         awg?.let { put("awg", it.toJson()) }
         put("awgOn", awgOn)
         put("hy2On", hy2On); put("vlessOn", vlessOn)
@@ -233,7 +236,7 @@ data class StableProfile(
                 realityPrivate = o.getString("realityPrivate"), realityPublic = o.getString("realityPublic"),
                 realityShortId = o.getString("realityShortId"), realitySni = o.optString("realitySni", "www.microsoft.com"),
                 cert = c?.let { CertBackup(it.getString("crt"), it.getString("key"), it.optString("meta"), it.getLong("notAfter")) },
-                vps = v?.let { ProfileVps(it.getString("id"), it.optString("ip"), it.optString("hostname")) },
+                vps = v?.let { ProfileVps(it.getString("id"), it.optString("ip"), it.optString("hostname"), if (it.has("limitGb")) it.getDouble("limitGb") else null) },
                 createdAt = o.optLong("createdAt", System.currentTimeMillis()),
                 awg = o.optJSONObject("awg")?.let { AwgParams.fromJson(it) },
                 awgOn = o.optBoolean("awgOn", false),

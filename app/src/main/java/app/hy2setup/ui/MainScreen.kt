@@ -62,7 +62,7 @@ private val DESTS = listOf(
     Dest("Инструменты", AppIcons.Build),
 )
 
-/** Корень интерфейса: нижняя навигация на 5 разделов, snackbar и общий диалог «доверять серверу?». */
+/** Корень интерфейса: нижняя навигация на 5 разделов (без VPN там, где нет встроенного клиента), snackbar и диалог «доверять серверу?». */
 @Composable
 fun AppRoot(vm: MainViewModel) {
     val snackbar = remember { SnackbarHostState() }
@@ -75,6 +75,7 @@ fun AppRoot(vm: MainViewModel) {
             bottomBar = {
                 NavigationBar {
                     DESTS.forEachIndexed { i, d ->
+                        if (i == TAB_VPN && !vm.vpnSupported) return@forEachIndexed
                         NavigationBarItem(
                             selected = vm.selectedTab == i,
                             onClick = { vm.selectedTab = i },

@@ -197,6 +197,9 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
     var opSizeId by mutableStateOf(prefs.getString("opSize", "") ?: "")
+    /** Фильтр тарифов при заказе VPS: цена до и трафик от (0 — без ограничения). */
+    var opFilter by mutableStateOf(OpFilter(prefs.getInt("opMaxPrice", 0), prefs.getInt("opMinTraffic", 0)))
+        private set
     var opTemplateId by mutableStateOf(prefs.getString("opTpl", "") ?: "")
     var opHostname by mutableStateOf("")
     val opKeySel = mutableStateListOf<String>()
@@ -1021,9 +1024,9 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     /** Локация недавно отказала «нет мест» (пометка на сутки). */
     fun opIsBad(id: String): Boolean = opBad[id]?.let { System.currentTimeMillis() - it < BAD_LOCATION_MS } ?: false
 
-    /** Локации, где есть тарифы, доступные к заказу, с IPv4 и не дороже $10/мес; помеченные — в конце. */
+    /** Локации, где есть тарифы, доступные к заказу, с IPv4 и подходящие под фильтр; помеченные — в конце. */
     val opLocationsOrderable: List<OpLocation>
-        get() = OneProviderClient.orderableLocations(opLocations, opSizes).sortedBy { opIsBad(it.id) }
+        get() = OneProviderClient.orderableLocations(opLocations, opSizes, opFilter).sortedBy { opIsBad(it.id) }
 
     /** Регионы с подходящими локациями: название → сколько в нём локаций без пометки «недоступна». */
     val opRegions: List<Pair<String, Int>>
@@ -1075,9 +1078,32 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         prefs.edit().putString("opBadLocs", o.toString()).apply()
     }
 
-    /** Тарифы выбранной локации: доступны к заказу, IPv4 включён, не дороже $10/мес. */
+    /** Тарифы выбранной локации: доступны к заказу, IPv4 включён, подходят под фильтр. */
     val opSizesForLocation: List<OpSize>
-        get() = OneProviderClient.orderableSizes(opSizes, opLocationsOrderable.firstOrNull { it.id == opLocationId })
+        get() = OneProviderClient.orderableSizes(opSizes, opLocationsOrderable.firstOrNull { it.id == opLocationId }, opFilter)
+
+    /** Сколько тарифов выбранной локации скрыл фильтр. */
+    val opSizesHiddenByFilter: Int
+        get() = opLocations.firstOrNull { it.id == opLocationId }
+            ?.let { loc -> OneProviderClient.orderableSizes(opSizes, loc).size - opSizesForLocation.size } ?: 0
+
+    /** Меняет фильтр тарифов; выбор локации и тарифа переходит на подходящие (по возможности в том же регионе). */
+    fun opSetFilter(f: OpFilter) {
+        opFilter = f
+        prefs.edit().putInt("opMaxPrice", f.maxPrice).putInt("opMinTraffic", f.minTrafficGb).apply()
+        opFixSelection()
+    }
+
+    /** Выбранные локация, регион и тариф — из подходящих; непомеченные локации — в первую очередь. */
+    private fun opFixSelection() {
+        if (opLocationsOrderable.none { it.id == opLocationId }) {
+            val inRegion = opLocationsInRegion
+            opLocationId = (inRegion.firstOrNull { !opIsBad(it.id) } ?: opLocationsOrderable.firstOrNull { !opIsBad(it.id) }
+                ?: opLocationsOrderable.firstOrNull())?.id.orEmpty()
+        }
+        opRegion = opLocationsOrderable.firstOrNull { it.id == opLocationId }?.group ?: opRegions.firstOrNull()?.first.orEmpty()
+        if (opSizesForLocation.none { it.id == opSizeId }) opSizeId = opSizesForLocation.firstOrNull()?.id.orEmpty()
+    }
 
     val opSelectedSize: OpSize? get() = opSizesForLocation.firstOrNull { it.id == opSizeId }
     val opSelectedLocation: OpLocation? get() = opLocationsOrderable.firstOrNull { it.id == opLocationId }
@@ -1089,10 +1115,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         launchTask(opLog) {
             addLog(opLog, "Загружаю список VPS…")
             val list = client.listVms()
-            opVms.clear()
-            opVms.addAll(list)
-            opSelected.retainAll { id -> list.any { it.id == id } }
-            opLoaded = true
+            setOpVms(list)
             addLog(opLog, "VPS в аккаунте: ${list.size}")
             loadBalance()
         }
@@ -1113,23 +1136,19 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             opKeys.clear(); opKeys.addAll(keys)
             opKeySel.retainAll { k -> keys.any { it.uuid == k } }
             opKeysLoaded = true
-            if (opLocationsOrderable.none { it.id == opLocationId }) {
-                opLocationId = opLocationsOrderable.firstOrNull { !opIsBad(it.id) }?.id ?: opLocationsOrderable.firstOrNull()?.id.orEmpty()
-            }
-            opRegion = opLocationsOrderable.firstOrNull { it.id == opLocationId }?.group ?: opRegions.firstOrNull()?.first.orEmpty()
-            if (opSizesForLocation.none { it.id == opSizeId }) opSizeId = opSizesForLocation.firstOrNull()?.id.orEmpty()
+            opFixSelection()
             if (tpls.none { it.id == opTemplateId }) opTemplateId = OneProviderClient.preferredTemplate(tpls)?.id.orEmpty()
             opCatalogLoaded = true
             loadBalance()
             val okLocs = opLocationsOrderable
-            val okSizes = sizes.count { sz -> okLocs.any { OneProviderClient.isOrderable(sz, it) } }
+            val okSizes = sizes.count { sz -> okLocs.any { OneProviderClient.isOrderable(sz, it, opFilter) } }
             addLog(opLog, "Подходящих локаций: ${okLocs.size} из ${locs.size} в ${opRegions.size} регионах, тарифов: $okSizes из ${sizes.size} " +
-                "(доступны к заказу, с IPv4, до $${OneProviderClient.MAX_MONTHLY_PRICE.toInt()}/мес). ОС: ${tpls.size}, SSH-ключей: ${keys.size}")
+                "(доступны к заказу, IPv4 включён; фильтр: ${opFilter.title}). ОС: ${tpls.size}, SSH-ключей: ${keys.size}")
             val closed = locs.count { !it.available }
             val noSizes = locs.count { it.available && it.sizeIds.isEmpty() }
             val noIpv4 = locs.count { it.available && it.sizeIds.isNotEmpty() && !it.hasIpv4 }
             addLog(opLog, "Отсеяно локаций: закрыты провайдером — $closed, без тарифов — $noSizes, без IPv4 — $noIpv4, " +
-                "без тарифа до $${OneProviderClient.MAX_MONTHLY_PRICE.toInt()} — ${locs.size - okLocs.size - closed - noSizes - noIpv4}. " +
+                "без подходящих тарифов — ${locs.size - okLocs.size - closed - noSizes - noIpv4}. " +
                 "Помечены «недоступна» за сутки: ${okLocs.count { opIsBad(it.id) }}.")
             addLog(opLog, "Формат ответа OneProvider — $format")
         }
@@ -1755,7 +1774,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             runner.runScript(ssh, Scripts.exportCert(fqdn, waits = 1)) { if (Links.isMarker(it)) markers += it else postLog(plusLog, it) }
             rememberProfile(ssh)
             val vm = opVms.firstOrNull { it.ip == ip }
-            val res = ProfileImport.fromServer(markers.toList(), fqdn, zone, ProfileVps(vm?.id.orEmpty(), ip, vm?.hostname.orEmpty()))
+            val res = ProfileImport.fromServer(markers.toList(), fqdn, zone, ProfileVps(vm?.id.orEmpty(), ip, vm?.hostname.orEmpty(), vm?.let { limitOf(it) }))
             if (res.found == 0) throw IllegalStateException("На $ip не найдено протоколов, которые можно перенести (Hysteria2, VLESS, AmneziaWG, Telegram).")
             var p = res.profile
             certFromMarkers(markers.toList())?.let { p = p.copy(cert = it) }
@@ -1915,7 +1934,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     rootPass = c.password
                     addLog(plusLog, "IPv4: $ip")
                     // новый VPS сразу запоминаем в профиле — старый остаётся в oldVps
-                    profile = profile.copy(vps = ProfileVps(c.id, ip, c.hostname), movedAt = System.currentTimeMillis())
+                    profile = profile.copy(vps = ProfileVps(c.id, ip, c.hostname, size.trafficGb?.takeIf { it.isFinite() }), movedAt = System.currentTimeMillis())
                     savePlusProfile(profile)
                     done(PlusStep.CREATE)
 
@@ -2218,7 +2237,10 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             val services = ServerCheck.services(check.toList())
             val traffic = ServerCheck.monthTrafficGb(check.toList())
             services.forEach { (name, ok) -> addLog(plusLog, (if (ok) "✓ " else "✗ ") + name + if (ok) " работает" else " — служба не запущена") }
-            traffic?.let { addLog(plusLog, "Трафик за месяц: ${"%.1f".format(it)} ГБ" + (trafficLimitGb(synced)?.let { l -> " из ${l.toInt()} ГБ" } ?: "")) }
+            // лимит трафика тарифа — у OneProvider; запоминается в профиле, чтобы полоса была и после перезапуска
+            val limit = fetchTrafficLimit(synced, plusLog)
+            val vps = synced.vps?.let { v -> if (limit != null) v.copy(trafficLimitGb = limit) else v }
+            traffic?.let { addLog(plusLog, "Трафик за месяц: ${"%.1f".format(it)} ГБ" + ((limit ?: vps?.trafficLimitGb)?.let { l -> " из ${l.toInt()} ГБ" } ?: "")) }
             if (synced.subAvailable) {
                 if (ServerCheck.SITE_MARKER in check) {
                     runner.runScript(ssh, Scripts.writeSite(StableProfile.SITE_DIR, Subscription.siteFiles(synced))) { if (!Links.isMarker(it)) postLog(plusLog, it) }
@@ -2226,7 +2248,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     addLog(plusLog, "Подписка Happ ещё не включена на этом сервере — нажмите «Обновить сервер» в «Ссылках» (ключи и ссылки не меняются).")
                 }
             }
-            storeStable(synced.copy(status = services, checkAt = System.currentTimeMillis(), trafficGb = traffic ?: synced.trafficGb))
+            storeStable(synced.copy(status = services, checkAt = System.currentTimeMillis(), trafficGb = traffic ?: synced.trafficGb, vps = vps))
             addLog(plusLog, "")
             addLog(plusLog, "Проверяю сервер ${ssh.host} и имя ${synced.fqdn} …")
             runDiagnose(ssh, synced.fqdn, plusLog, synced.realitySni, synced.vlessPort)
@@ -2394,11 +2416,45 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    /** Лимит трафика VPS профиля (ГБ) из списка VPS OneProvider, если он загружен. */
+    /** Лимит трафика VPS профиля (ГБ): из загруженного списка VPS OneProvider, иначе сохранённый в профиле. */
     fun trafficLimitGb(p: StableProfile): Double? {
         val v = p.vps ?: return null
-        val vm = opVms.firstOrNull { (v.id.isNotEmpty() && it.id == v.id) || it.ip == v.ip } ?: return null
-        return vm.bandwidthGb.filter { it.isDigit() || it == '.' }.toDoubleOrNull()?.takeIf { it > 0 }
+        return opVms.firstOrNull { sameVps(v, it) }?.let { limitOf(it) } ?: v.trafficLimitGb
+    }
+
+    private fun sameVps(v: ProfileVps, vm: OpVm) = (v.id.isNotEmpty() && vm.id == v.id) || vm.ip == v.ip
+
+    /** Лимит трафика тарифа VPS (ГБ в месяц); null — без лимита или неизвестен. */
+    private fun limitOf(vm: OpVm): Double? = OneProviderClient.parseTrafficGb(vm.bandwidthGb)?.takeIf { it.isFinite() }
+
+    /** Свежий список VPS OneProvider; лимиты трафика заодно запоминаются в профилях (полоса трафика — и после перезапуска). */
+    private fun setOpVms(list: List<OpVm>, except: String? = null) {
+        opVms.clear(); opVms.addAll(list)
+        opSelected.retainAll { id -> list.any { it.id == id } }
+        opLoaded = true
+        stableProfiles.toList().forEach { p ->
+            val v = p.vps ?: return@forEach
+            if (p.fqdn == except) return@forEach
+            val limit = list.firstOrNull { sameVps(v, it) }?.let { limitOf(it) } ?: return@forEach
+            if (limit != v.trafficLimitGb) storeStable(p.copy(vps = v.copy(trafficLimitGb = limit)))
+        }
+    }
+
+    /** Лимит трафика VPS профиля у OneProvider, если введены ключи; null — не узнать (ошибка, VPS не в этом аккаунте). */
+    private suspend fun fetchTrafficLimit(p: StableProfile, target: SnapshotStateList<String>): Double? {
+        val v = p.vps ?: return null
+        if (opApiKey.isBlank() || opClientKey.isBlank()) return null
+        val list = try {
+            OneProviderClient(opApiKey.trim(), opClientKey.trim()).listVms()
+        } catch (e: Exception) {
+            if (e is CancellationException) throw e
+            addLog(target, "Лимит трафика у OneProvider узнать не удалось: ${e.message}")
+            return null
+        }
+        setOpVms(list, except = p.fqdn)
+        val vm = list.firstOrNull { sameVps(v, it) }
+        if (vm == null) addLog(target, "VPS ${v.ip} нет в аккаунте OneProvider — лимит трафика неизвестен.")
+        return vm?.let { limitOf(it) }
     }
 
     // ---------- Встроенный VPN-клиент ----------

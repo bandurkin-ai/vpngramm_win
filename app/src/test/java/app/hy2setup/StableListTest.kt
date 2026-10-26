@@ -14,6 +14,18 @@ import org.robolectric.annotation.Config
 class StableListTest {
     private val ctx: Context = ApplicationProvider.getApplicationContext()
 
+    /** Полоса трафика: лимит из свежего списка VPS OneProvider, а без него — сохранённый в профиле. */
+    @Test
+    fun trafficLimitFromProfileWhenVpsListNotLoaded() {
+        val vm = MainViewModel(ctx as android.app.Application)
+        val p = StableProfile.create("example.org", "a", "", "https://www.bing.com/")
+            .copy(vps = ProfileVps("1", "203.0.113.1", "a", trafficLimitGb = 1000.0), trafficGb = 120.0)
+        assertEquals(1000.0, vm.trafficLimitGb(p))
+        vm.opVms += OpVm("1", "203.0.113.1", "a", "active", "1024", "20", "1", "2000", "", "", "", "")
+        assertEquals(2000.0, vm.trafficLimitGb(p))
+        assertEquals(null, vm.trafficLimitGb(p.copy(vps = ProfileVps("7", "203.0.113.7", "x"))))
+    }
+
     @Test
     fun selectingSwitchesProfileAndTargetsExcludeBusyServers() {
         val vm = MainViewModel(ctx as android.app.Application)

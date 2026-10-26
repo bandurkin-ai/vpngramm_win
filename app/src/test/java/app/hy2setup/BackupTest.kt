@@ -60,9 +60,13 @@ class BackupTest {
         val p = StableProfile.create("example.org", "vpn1", "", "https://www.bing.com/")
         val fp = Backup.serverFingerprint(p)
         // переезд, проверка, трафик и продление сертификата — копия по-прежнему свежая
-        val moved = p.copy(vps = ProfileVps("9", "203.0.113.9", "x"), movedAt = 5, checkAt = 7, status = mapOf("VLESS" to true), trafficGb = 1.5,
+        val moved = p.copy(vps = ProfileVps("9", "203.0.113.9", "x", trafficLimitGb = 1000.0), movedAt = 5, checkAt = 7, status = mapOf("VLESS" to true), trafficGb = 1.5,
             cert = CertBackup("crt", "key", "", 1))
         assertEquals(fp, Backup.serverFingerprint(moved))
+        // лимит трафика, узнанный при «Проверить», не делает копию устаревшей
+        val onVps = p.copy(vps = ProfileVps("9", "203.0.113.9", "x"))
+        assertEquals(ProfileImport.backupFingerprint(listOf(onVps)),
+            ProfileImport.backupFingerprint(listOf(onVps.copy(vps = onVps.vps!!.copy(trafficLimitGb = 1000.0)))))
         // новый человек или новые ключи — устарела
         assertNotEquals(fp, Backup.serverFingerprint(p.copy(users = listOf(ProfileUser.create("Мама", emptyList())))))
         assertNotEquals(fp, Backup.serverFingerprint(p.copy(hy2Auth = "other")))

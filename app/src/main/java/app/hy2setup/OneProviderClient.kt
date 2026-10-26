@@ -62,12 +62,42 @@ data class OpSize(
 ) {
     val monthly: Double? get() = monthlyPrice.toDoubleOrNull()
 
+    /** Трафик в ГБ в месяц: бесконечность — без лимита, null — не удалось понять. */
+    val trafficGb: Double? get() = OneProviderClient.parseTrafficGb(bandwidthGb)
+
     /** «1 vCPU · 1 ГБ RAM · 20 ГБ диск · трафик 750 ГБ» */
     val summary: String
         get() {
             val ram = ramMb.toIntOrNull()?.let { if (it >= 1024 && it % 1024 == 0) "${it / 1024} ГБ" else "$it МБ" } ?: "$ramMb МБ"
             return "$cores vCPU · $ram RAM · $hddGb ГБ диск · трафик $bandwidthGb ГБ"
         }
+}
+
+/** Фильтр тарифов: цена не выше [maxPrice] $/мес и трафик не меньше [minTrafficGb] ГБ; 0 — без ограничения. */
+data class OpFilter(val maxPrice: Int = 0, val minTrafficGb: Int = 0) {
+    val active: Boolean get() = maxPrice > 0 || minTrafficGb > 0
+
+    fun matches(size: OpSize): Boolean {
+        if (maxPrice > 0 && (size.monthly ?: return false) > maxPrice) return false
+        if (minTrafficGb > 0 && (size.trafficGb ?: return false) < minTrafficGb) return false
+        return true
+    }
+
+    /** «до $10/мес, трафик от 1 ТБ» или «без фильтра». */
+    val title: String
+        get() = listOfNotNull(
+            "до $$maxPrice/мес".takeIf { maxPrice > 0 },
+            "трафик от ${trafficTitle(minTrafficGb)}".takeIf { minTrafficGb > 0 },
+        ).joinToString(", ").ifEmpty { "без фильтра" }
+
+    companion object {
+        /** Варианты фильтра «цена до», $/мес (0 — любая). */
+        val PRICE_STEPS = listOf(0, 5, 10, 15, 20, 30, 50, 100)
+        /** Варианты фильтра «трафик от», ГБ (0 — любой). */
+        val TRAFFIC_STEPS = listOf(0, 500, 1000, 2000, 5000, 10000)
+
+        fun trafficTitle(gb: Int): String = if (gb >= 1000 && gb % 1000 == 0) "${gb / 1000} ТБ" else "$gb ГБ"
+    }
 }
 
 data class OpTemplate(val id: String, val name: String)
@@ -325,8 +355,14 @@ class OneProviderClient(
             }.sortedWith(compareBy({ it.monthlyPrice.toDoubleOrNull() ?: Double.MAX_VALUE }, { it.ramMb.toIntOrNull() ?: 0 }))
         }
 
-        /** Максимальная цена тарифа для заказа из приложения, USD в месяц. */
-        const val MAX_MONTHLY_PRICE = 10.0
+        /** Трафик тарифа из поля bandwidth: «1000» (ГБ), «2 TB», «Unlimited»; null — не удалось понять. */
+        fun parseTrafficGb(raw: String): Double? {
+            val s = raw.trim().lowercase()
+            if ("unlim" in s || "безлим" in s || s == "-1") return Double.POSITIVE_INFINITY
+            val n = Regex("[0-9]+([.,][0-9]+)?").find(s)?.value?.replace(',', '.')?.toDoubleOrNull() ?: return null
+            if (n <= 0) return null
+            return if ("tb" in s || "тб" in s) n * 1000 else n
+        }
 
         /** Значения, означающие «нет / недоступно» в полях-признаках API. */
         private val NEGATIVE = setOf(
@@ -378,19 +414,18 @@ class OneProviderClient(
         }
 
         /**
-         * Тариф можно заказать в локации: локация открыта и предлагает этот тариф, разрешено создание, IPv4 входит
-         * в тариф, цена не выше лимита. Локация без списка тарифов не подходит: раньше она считалась «доступной для всех»
-         * и давала отказ провайдера при создании.
+         * Тариф можно заказать в локации: локация открыта и предлагает этот тариф, разрешено создание, у тарифа есть цена,
+         * IPv4 входит в тариф и есть в локации, тариф проходит [filter] (цена и трафик). Локация без списка тарифов
+         * не подходит: раньше она считалась «доступной для всех» и давала отказ провайдера при создании.
          */
-        fun isOrderable(size: OpSize, loc: OpLocation, maxPrice: Double = MAX_MONTHLY_PRICE): Boolean {
-            val price = size.monthly ?: return false
-            return size.creationAllowed &&
+        fun isOrderable(size: OpSize, loc: OpLocation, filter: OpFilter = OpFilter()): Boolean =
+            size.monthly != null &&
+                size.creationAllowed &&
                 size.ipv4.equals("included", ignoreCase = true) &&
                 loc.available &&
                 loc.hasIpv4 &&
-                price <= maxPrice &&
-                size.id in loc.sizeIds
-        }
+                size.id in loc.sizeIds &&
+                filter.matches(size)
 
         /** Сводка по формату ответа /vm/locations для журнала: только имена полей и вид available_sizes, без данных. */
         fun describeLocationsFormat(any: Any): String {
@@ -411,12 +446,12 @@ class OneProviderClient(
             return "поля локации: " + first.keys().asSequence().sorted().joinToString(", ") + "; available_sizes: $avKind"
         }
 
-        fun orderableSizes(sizes: List<OpSize>, loc: OpLocation?): List<OpSize> =
-            if (loc == null) emptyList() else sizes.filter { isOrderable(it, loc) }
+        fun orderableSizes(sizes: List<OpSize>, loc: OpLocation?, filter: OpFilter = OpFilter()): List<OpSize> =
+            if (loc == null) emptyList() else sizes.filter { isOrderable(it, loc, filter) }
 
         /** Локации, где есть хотя бы один подходящий тариф. */
-        fun orderableLocations(locs: List<OpLocation>, sizes: List<OpSize>): List<OpLocation> =
-            locs.filter { loc -> sizes.any { isOrderable(it, loc) } }
+        fun orderableLocations(locs: List<OpLocation>, sizes: List<OpSize>, filter: OpFilter = OpFilter()): List<OpLocation> =
+            locs.filter { loc -> sizes.any { isOrderable(it, loc, filter) } }
 
         fun parseTemplates(any: Any): List<OpTemplate> {
             val arr = any as? JSONArray ?: return emptyList()

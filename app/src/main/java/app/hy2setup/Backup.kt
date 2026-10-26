@@ -94,7 +94,7 @@ object Backup {
 
     /** Отпечаток копии без меняющихся сами по себе полей (проверки, трафик) — для напоминания «копия устарела». */
     fun fingerprint(d: BackupData): String {
-        val stable = d.copy(servers = d.servers.map { it.copy(checkAt = 0, status = emptyMap(), trafficGb = null) })
+        val stable = d.copy(servers = d.servers.map { it.copy(checkAt = 0, status = emptyMap(), trafficGb = null, vps = it.vps?.copy(trafficLimitGb = null)) })
         val digest = java.security.MessageDigest.getInstance("SHA-256").digest(toJson(stable).toByteArray())
         return digest.joinToString("") { "%02x".format(it) }.take(32)
     }

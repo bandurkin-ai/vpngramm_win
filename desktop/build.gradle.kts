@@ -10,7 +10,7 @@ plugins {
  * плюс своя реализация платформенного слоя (desktop/src/main/kotlin).
  */
 
-val appVersion = "3.5"
+val appVersion = "3.6.1"
 
 /** Файлы, которые есть только в Android-версии (службы, Android Keystore, VpnService и т. п.). */
 val androidOnly = listOf(

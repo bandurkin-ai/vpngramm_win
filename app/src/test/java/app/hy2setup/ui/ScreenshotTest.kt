@@ -122,6 +122,55 @@ class ScreenshotTest {
         }
     }
 
+    /** Главная: трафик за месяц с полосой — лимит сохранён в профиле, список VPS OneProvider не загружен. */
+    @Test
+    fun homeTrafficBar() {
+        val model = vm(0).apply {
+            plusProfile = plusProfile!!.copy(vps = ProfileVps("123", "203.0.113.10", "vpn", trafficLimitGb = 1000.0), trafficGb = 312.4)
+        }
+        org.junit.Assert.assertEquals(1000.0, model.trafficLimitGb(model.plusProfile!!))
+        captureRoboImage("build/screens/1-home-traffic-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
+    }
+
+    /** Заказ VPS с фильтром: тарифы дороже $10 видны, фильтр «до $20, от 2 ТБ» оставляет подходящие. */
+    @Test
+    @Config(qualifiers = "w411dp-h1100dp-xxhdpi")
+    fun orderFilter() {
+        val model = vm(3, withProfile = false)
+        fun sz(id: String, ram: String, traffic: String, price: String) =
+            app.hy2setup.OpSize(id, "", "General", "1", ram, "20", traffic, "1000", price, "0.01", true)
+        model.opSizes += listOf(sz("44", "1024", "1000", "4.00"), sz("45", "2048", "2000", "12.00"), sz("46", "4096", "5000", "24.00"))
+        model.opLocations += listOf(
+            app.hy2setup.OpLocation("2", "Europe", "Netherlands", "Amsterdam", setOf("44", "45", "46")),
+            app.hy2setup.OpLocation("3", "North America", "USA", "Miami", setOf("44")),
+        )
+        model.opTemplates += app.hy2setup.OpTemplate("t", "Debian 12")
+        model.opTemplateId = "t"
+        model.opCatalogLoaded = true
+        model.opSelectLocation("2")
+        // без фильтра — все три тарифа, в том числе дороже $10
+        org.junit.Assert.assertEquals(listOf("44", "45", "46"), model.opSizesForLocation.map { it.id })
+        model.opSizeId = "44"
+        model.opSetFilter(app.hy2setup.OpFilter(maxPrice = 20, minTrafficGb = 2000))
+        org.junit.Assert.assertEquals(listOf("45"), model.opSizesForLocation.map { it.id })
+        org.junit.Assert.assertEquals("45", model.opSelectedSize?.id)                  // выбор перешёл на подходящий
+        org.junit.Assert.assertEquals(listOf("Europe" to 1), model.opRegions)           // в Майами нет тарифа под фильтр
+        org.junit.Assert.assertEquals(2, model.opSizesHiddenByFilter)
+        captureRoboImage("build/screens/3-cloud-order-filter-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { VpsOrderForm(model) }
+                }
+            }
+        }
+        // фильтр запоминается
+        org.junit.Assert.assertEquals(app.hy2setup.OpFilter(20, 2000), vm(3, withProfile = false).opFilter)
+        model.opSetFilter(app.hy2setup.OpFilter())
+    }
+
     /** Главная → «Протоколы»: прочитано с сервера, XHTTP отмечен к установке, Telegram — к удалению. */
     @Test
     fun homeProtocolsCard() {

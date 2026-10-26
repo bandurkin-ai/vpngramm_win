@@ -202,9 +202,9 @@ object ProfileImport {
         return if (t.startsWith("[")) decodeList(t) else listOf(StableProfile.fromJson(t))
     }
 
-    /** Отпечаток серверов без меняющихся сами по себе полей (проверки, трафик). */
+    /** Отпечаток серверов без меняющихся сами по себе полей (проверки, трафик и его лимит). */
     fun backupFingerprint(list: List<StableProfile>): String {
-        val stable = list.map { it.copy(checkAt = 0, status = emptyMap(), trafficGb = null) }
+        val stable = list.map { it.copy(checkAt = 0, status = emptyMap(), trafficGb = null, vps = it.vps?.copy(trafficLimitGb = null)) }
         val d = java.security.MessageDigest.getInstance("SHA-256").digest(encodeList(stable).toByteArray())
         return d.joinToString("") { "%02x".format(it) }.take(32)
     }

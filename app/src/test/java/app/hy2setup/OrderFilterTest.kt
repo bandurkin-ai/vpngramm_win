@@ -6,23 +6,54 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class OrderFilterTest {
-    private fun size(id: String, price: String, ipv4: String = "included", allowed: Boolean = true) =
-        OpSize(id, "", "General", "1", "1024", "20", "1000", "1000", price, "0.01", allowed, ipv4)
+    private fun size(id: String, price: String, ipv4: String = "included", allowed: Boolean = true, traffic: String = "1000") =
+        OpSize(id, "", "General", "1", "1024", "20", traffic, "1000", price, "0.01", allowed, ipv4)
 
     private val paris = OpLocation("1", "Europe", "FR", "Paris", setOf("a", "b", "c", "d", "e", "f"))
     private val noIpv4 = OpLocation("2", "Asia", "SG", "Singapore", emptySet(), hasIpv4 = false)
 
     @Test
-    fun filtersByAvailabilityIpv4AndPrice() {
+    fun filtersByAvailabilityAndIpv4WithoutPriceLimit() {
         val sizes = listOf(
             size("a", "4.00"),
-            size("b", "10.00"),            // ровно $10 — подходит
-            size("c", "10.01"),            // дороже
+            size("b", "10.00"),
+            size("c", "45.00"),            // дороже $10 — теперь тоже показывается
             size("d", "5.00", ipv4 = "addon"),
             size("e", "5.00", ipv4 = "none"),
             size("f", "3.00", allowed = false),
         )
-        assertEquals(listOf("a", "b"), OneProviderClient.orderableSizes(sizes, paris).map { it.id })
+        assertEquals(listOf("a", "b", "c"), OneProviderClient.orderableSizes(sizes, paris).map { it.id })
+    }
+
+    @Test
+    fun filterByPriceAndTraffic() {
+        val sizes = listOf(
+            size("a", "4.00", traffic = "1000"),
+            size("b", "10.00", traffic = "2000"),
+            size("c", "10.01", traffic = "5 TB"),
+            size("d", "30.00", traffic = "Unlimited"),
+            size("e", "6.00", traffic = ""),          // трафик неизвестен — при фильтре по трафику скрыт
+        )
+        fun ids(f: OpFilter) = OneProviderClient.orderableSizes(sizes, paris.copy(sizeIds = setOf("a", "b", "c", "d", "e")), f).map { it.id }
+        assertEquals(listOf("a", "b", "c", "d", "e"), ids(OpFilter()))
+        assertEquals(listOf("a", "b", "e"), ids(OpFilter(maxPrice = 10)))           // ровно $10 подходит
+        assertEquals(listOf("b", "c", "d"), ids(OpFilter(minTrafficGb = 2000)))
+        assertEquals(listOf("b"), ids(OpFilter(maxPrice = 10, minTrafficGb = 2000)))
+        assertEquals(listOf("d"), ids(OpFilter(minTrafficGb = 10000)))            // безлимит проходит любой порог
+        // локация видна, только если в ней есть тариф под фильтр
+        assertEquals(emptyList<String>(), OneProviderClient.orderableLocations(listOf(paris), sizes, OpFilter(maxPrice = 5, minTrafficGb = 5000)).map { it.id })
+    }
+
+    @Test
+    fun parsesTraffic() {
+        assertEquals(1000.0, OneProviderClient.parseTrafficGb("1000")!!, 0.0)
+        assertEquals(2000.0, OneProviderClient.parseTrafficGb("2 TB")!!, 0.0)
+        assertEquals(1500.0, OneProviderClient.parseTrafficGb("1,5 ТБ")!!, 0.0)
+        assertTrue(OneProviderClient.parseTrafficGb("Unlimited")!!.isInfinite())
+        assertEquals(null, OneProviderClient.parseTrafficGb(""))
+        assertEquals(null, OneProviderClient.parseTrafficGb("0"))
+        assertEquals("до $10/мес, трафик от 2 ТБ", OpFilter(10, 2000).title)
+        assertEquals("без фильтра", OpFilter().title)
     }
 
     @Test

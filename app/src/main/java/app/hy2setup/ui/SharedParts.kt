@@ -17,6 +17,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -30,7 +31,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.hy2setup.MainViewModel
-import app.hy2setup.OneProviderClient
+import app.hy2setup.OpFilter
 import app.hy2setup.OpSshKey
 import app.hy2setup.ServerProfile
 import app.hy2setup.platform.Device
@@ -147,17 +148,20 @@ fun SshAccessCard(vm: MainViewModel) {
     }
 }
 
-/** Выбор локации, тарифа (доступные к заказу, с IPv4, до $10/мес), ОС и SSH-ключей кабинета. */
+/** Выбор локации, тарифа (доступные к заказу, IPv4 включён, фильтр по цене и трафику), ОС и SSH-ключей кабинета. */
 @Composable
 fun VpsOrderForm(vm: MainViewModel) {
     if (!vm.opCatalogLoaded) {
         OutlinedButton(onClick = vm::opLoadCatalog, enabled = !vm.running, modifier = Modifier.fillMaxWidth()) {
             Text("Загрузить локации, тарифы и ключи")
         }
-        Hint("Тарифы: только доступные к заказу, с IPv4 и не дороже $${OneProviderClient.MAX_MONTHLY_PRICE.toInt()}/мес.")
+        Hint("Тарифы: только доступные к заказу и с IPv4 в тарифе. После загрузки их можно отфильтровать по цене и трафику.")
         return
     }
-    if (vm.opLocationsOrderable.isEmpty()) ErrorText("Подходящих локаций нет.")
+    VpsFilter(vm)
+    if (vm.opLocationsOrderable.isEmpty()) {
+        ErrorText(if (vm.opFilter.active) "Под фильтр (${vm.opFilter.title}) ничего не подходит — поднимите цену или уменьшите трафик." else "Подходящих локаций нет.")
+    }
     // шаг 1: регион, шаг 2: город и страна внутри региона
     Picker(
         "Регион", vm.opRegion.ifEmpty { "Выберите…" },
@@ -176,7 +180,9 @@ fun VpsOrderForm(vm: MainViewModel) {
     }
     Text("Тариф", style = MaterialTheme.typography.titleSmall)
     val sizes = vm.opSizesForLocation
-    if (sizes.isEmpty()) Hint("В этой локации нет доступных тарифов.")
+    if (sizes.isEmpty() && vm.opLocationsOrderable.isNotEmpty()) Hint("В этой локации нет доступных тарифов.")
+    val hidden = vm.opSizesHiddenByFilter
+    if (hidden > 0) Hint("Фильтр скрыл тарифов в этой локации: $hidden.")
     sizes.forEach { sz ->
         ListItem(
             headlineContent = { Text(sz.summary) },
@@ -197,6 +203,29 @@ fun VpsOrderForm(vm: MainViewModel) {
     if (vm.opKeys.isEmpty()) Hint("В кабинете нет SSH-ключей — вход будет по паролю root, который выдаст провайдер.")
     vm.opKeys.forEach { k -> KeyRow(k, k.uuid in vm.opKeySel, !vm.running) { vm.opToggleKey(k.uuid) } }
     OutlinedButton(onClick = vm::opLoadCatalog, enabled = !vm.running) { Text("Обновить список") }
+}
+
+/** Фильтр тарифов: «Цена до» и «Трафик от»; регионы, локации и тарифы ниже показываются только подходящие. */
+@Composable
+private fun VpsFilter(vm: MainViewModel) {
+    val f = vm.opFilter
+    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+        Box(Modifier.weight(1f)) {
+            Picker(
+                "Цена до", if (f.maxPrice == 0) "любая" else "$${f.maxPrice}/мес",
+                OpFilter.PRICE_STEPS.map { "$it" to if (it == 0) "любая" else "$$it/мес" }, !vm.running,
+            ) { vm.opSetFilter(f.copy(maxPrice = it.toInt())) }
+        }
+        Box(Modifier.weight(1f)) {
+            Picker(
+                "Трафик от", if (f.minTrafficGb == 0) "любой" else OpFilter.trafficTitle(f.minTrafficGb),
+                OpFilter.TRAFFIC_STEPS.map { "$it" to if (it == 0) "любой" else OpFilter.trafficTitle(it) }, !vm.running,
+            ) { vm.opSetFilter(f.copy(minTrafficGb = it.toInt())) }
+        }
+    }
+    if (f.active) {
+        TextButton(onClick = { vm.opSetFilter(OpFilter()) }, enabled = !vm.running) { Text("Сбросить фильтр") }
+    }
 }
 
 @Composable

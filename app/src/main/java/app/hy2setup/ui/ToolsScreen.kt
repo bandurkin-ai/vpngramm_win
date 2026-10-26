@@ -26,11 +26,7 @@ fun ToolsScreen(vm: MainViewModel) {
     val version = rememberAppVersion()
 
     ScreenFrame(title = "Инструменты", running = vm.running) {
-        if (!vm.monitorSupported) {
-            SectionCard("Контроль серверов", AppIcons.Shield, subtitle = "Есть в версии для Android", startExpanded = false) {
-                Hint("Фоновая проверка серверов с уведомлениями работает в приложении для Android. Здесь проверить сервер можно кнопкой «Проверить» на Главной.")
-            }
-        } else SectionCard(
+        if (vm.monitorSupported) SectionCard(
             "Контроль серверов", AppIcons.Shield,
             subtitle = if (vm.monitorHours == 0) "Выключен" else "Проверка раз в ${vm.monitorHours} ч",
         ) {

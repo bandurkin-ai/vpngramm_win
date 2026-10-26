@@ -17,6 +17,10 @@ class StableProfileTest {
         assertEquals(p.links(), back.links())
         // новый VPS не меняет ссылки
         assertEquals(p.links(), back.copy(vps = ProfileVps("99", "198.51.100.1", "x")).links())
+        // лимит трафика VPS сохраняется; у старых профилей его нет
+        val withLimit = p.copy(vps = p.vps!!.copy(trafficLimitGb = 2000.0))
+        assertEquals(2000.0, StableProfile.fromJson(withLimit.toJson()).vps?.trafficLimitGb)
+        assertEquals(null, back.vps?.trafficLimitGb)
     }
 
     @Test
