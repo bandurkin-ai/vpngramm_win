@@ -3,11 +3,11 @@ package app.hy2setup
 import org.json.JSONArray
 import org.json.JSONObject
 
-/** Сохранённый сервер вкладки «Сервер» вместе с его паролем и ключом. */
+/** Сохранённый сервер «Доступа к серверам» вместе с его паролем и ключом. */
 data class SavedServer(val profile: ServerProfile, val password: String, val privateKey: String, val passphrase: String)
 
 /**
- * Настройки доступа для копии: вкладка «Сервер», имя (домен), ключи OneProvider и name.com.
+ * Настройки доступа для копии: «Доступ к серверам», имя (домен), ключи OneProvider и name.com.
  * Всё это — секреты: без пароля копии они лежат в файле открытым текстом.
  */
 data class BackupSettings(
@@ -17,12 +17,15 @@ data class BackupSettings(
     val ncUser: String = "", val ncToken: String = "",
     val opApiKey: String = "", val opClientKey: String = "",
     val servers: List<SavedServer> = emptyList(),
+    /** Ключ Рутокена (открытый ключ и key handle, JSON); пусто — нет. Без самого токена бесполезен. */
+    val hwKey: String = "",
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("host", host); put("sshPort", sshPort); put("user", user); put("useKey", useKey)
         put("password", password); put("privateKey", privateKey); put("passphrase", passphrase)
         put("zone", zone); put("subdomain", subdomain); put("ttl", ttl); put("email", email); put("masquerade", masquerade)
         put("ncUser", ncUser); put("ncToken", ncToken); put("opApiKey", opApiKey); put("opClientKey", opClientKey)
+        if (hwKey.isNotEmpty()) put("hwKey", hwKey)
         put("servers", JSONArray().apply {
             servers.forEach {
                 put(JSONObject().put("host", it.profile.host).put("port", it.profile.port).put("user", it.profile.user)
@@ -39,6 +42,7 @@ data class BackupSettings(
             ttl = o.optString("ttl", "300"), email = o.optString("email"), masquerade = o.optString("masquerade"),
             ncUser = o.optString("ncUser"), ncToken = o.optString("ncToken"),
             opApiKey = o.optString("opApiKey"), opClientKey = o.optString("opClientKey"),
+            hwKey = o.optString("hwKey"),
             servers = o.optJSONArray("servers")?.let { a ->
                 (0 until a.length()).mapNotNull { i ->
                     val s = a.optJSONObject(i) ?: return@mapNotNull null

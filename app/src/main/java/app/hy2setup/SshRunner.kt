@@ -22,6 +22,8 @@ data class SshConfig(
     /** Приватный ключ в текстовом виде (PEM/OpenSSH). Пусто — вход по паролю. */
     val privateKey: String,
     val keyPassphrase: String,
+    /** Ключ на аппаратном токене (Рутокен MFA): если задан, вход только по нему — с касанием токена. */
+    val hwKey: app.hy2setup.hwkey.HwKey? = null,
 )
 
 class SshException(message: String, cause: Throwable? = null) : Exception(message, cause)
@@ -34,6 +36,8 @@ class SshException(message: String, cause: Throwable? = null) : Exception(messag
  */
 class SshRunner(
     private val knownHostsFile: File,
+    /** Канал к аппаратному токену (ждёт, пока его вставят или приложат); null — токены не поддерживаются. */
+    private val hwTransport: (() -> app.hy2setup.hwkey.HwTransport)? = null,
     /** Вызывается, когда сервер неизвестен. Возвращает true, если пользователь доверяет. */
     private val confirmHostKey: suspend (String) -> Boolean,
 ) {
@@ -89,7 +93,11 @@ class SshRunner(
         }
         val jsch = JSch()
         jsch.setKnownHosts(knownHostsFile.absolutePath)
-        val useKey = cfg.privateKey.isNotBlank()
+        val hw = cfg.hwKey?.let { k ->
+            val t = hwTransport ?: throw SshException("Вход по Рутокену на этом устройстве недоступен.")
+            app.hy2setup.hwkey.HwIdentity(k, t).also { jsch.addIdentity(it, null) }
+        }
+        val useKey = hw == null && cfg.privateKey.isNotBlank()
         if (useKey) {
             val keyBytes = normalizeKey(cfg.privateKey).toByteArray()
             checkKey(jsch, keyBytes, cfg.keyPassphrase)
@@ -101,12 +109,16 @@ class SshRunner(
             }
         }
         val session = jsch.getSession(cfg.user, cfg.host, cfg.port)
-        if (cfg.privateKey.isBlank()) session.setPassword(cfg.password)
+        if (!useKey && hw == null) session.setPassword(cfg.password)
         session.setConfig("StrictHostKeyChecking", "ask")
         session.setConfig(
             "PreferredAuthentications",
-            if (cfg.privateKey.isBlank()) "password,keyboard-interactive" else "publickey",
+            if (!useKey && hw == null) "password,keyboard-interactive" else "publickey",
         )
+        if (hw != null) {
+            val algs = session.getConfig("PubkeyAcceptedAlgorithms").orEmpty()
+            session.setConfig("PubkeyAcceptedAlgorithms", (listOf(cfg.hwKey!!.type) + algs.split(",").filter { it.isNotBlank() }).joinToString(","))
+        }
         session.userInfo = object : UserInfo {
             override fun getPassphrase(): String? = null
             override fun getPassword(): String? = null
@@ -120,7 +132,10 @@ class SshRunner(
             session.connect(20_000)
         } catch (e: Exception) {
             val msg = e.message.orEmpty()
+            val authFail = msg.contains("Auth fail", true) || msg.contains("Auth cancel", true)
             val hint = when {
+                authFail && hw != null -> hw.lastError ?: ("Сервер не принял ключ Рутокена. Добавьте его на сервер кнопкой «Добавить ключ Рутокена на сервер» " +
+                    "(нужен OpenSSH 8.2 или новее) и проверьте имя пользователя «${cfg.user}».")
                 (msg.contains("Auth fail", true) || msg.contains("Auth cancel", true)) && useKey ->
                     "Сервер не принял ключ. Проверьте, что публичный ключ (.pub) добавлен в файл " +
                         "~/.ssh/authorized_keys пользователя «${cfg.user}» на сервере и что имя пользователя указано верно."

@@ -165,16 +165,20 @@ fun VpsOrderForm(vm: MainViewModel) {
     // шаг 1: регион, шаг 2: город и страна внутри региона
     Picker(
         "Регион", vm.opRegion.ifEmpty { "Выберите…" },
-        vm.opRegions.map { (r, n) -> r to "$r · " + if (n == 0) "все недоступны" else "локаций: $n" },
+        vm.opRegions.map { (r, n) ->
+            r to "$r · " + (if (n == 0) "все недоступны" else "локаций: $n") + (vm.opRegionPing(r)?.let { " · от ${it.title}" } ?: "")
+        },
         !vm.running, vm::opSelectRegion,
     )
     val loc = vm.opSelectedLocation
+    fun ping(id: String) = vm.opPing[id]?.let { " · ${it.title}" } ?: ""
     Picker(
         "Локация",
-        loc?.let { it.place + (vm.opBadSince(it.id)?.let { t -> " · недоступна ($t)" } ?: "") } ?: "Выберите…",
-        vm.opLocationsInRegion.map { l -> l.id to l.place + (vm.opBadSince(l.id)?.let { t -> " · недоступна (проверено $t)" } ?: "") },
+        loc?.let { it.place + ping(it.id) + (vm.opBadSince(it.id)?.let { t -> " · недоступна ($t)" } ?: "") } ?: "Выберите…",
+        vm.opLocationsInRegion.map { l -> l.id to l.place + ping(l.id) + (vm.opBadSince(l.id)?.let { t -> " · недоступна (проверено $t)" } ?: "") },
         !vm.running, vm::opSelectLocation,
     )
+    PingHint(vm, loc)
     if (loc != null && vm.opIsBad(loc.id)) {
         ErrorText("В этой локации провайдер недавно ответил «нет мест». Лучше выбрать другую.")
     }
@@ -203,6 +207,20 @@ fun VpsOrderForm(vm: MainViewModel) {
     if (vm.opKeys.isEmpty()) Hint("В кабинете нет SSH-ключей — вход будет по паролю root, который выдаст провайдер.")
     vm.opKeys.forEach { k -> KeyRow(k, k.uuid in vm.opKeySel, !vm.running) { vm.opToggleKey(k.uuid) } }
     OutlinedButton(onClick = vm::opLoadCatalog, enabled = !vm.running) { Text("Обновить список") }
+}
+
+/** Пинг выбранной локации: замер или оценка, и кнопка «Измерить пинг». */
+@Composable
+private fun PingHint(vm: MainViewModel, loc: app.hy2setup.OpLocation?) {
+    val p = loc?.let { vm.opPing[it.id] }
+    when {
+        vm.opPinging -> Hint("Измеряю пинг до локаций…")
+        p == null && loc != null -> Hint("Пинг до ${loc.place} неизвестен: нет адреса для замера и города нет в справочнике.")
+        p != null && !p.estimated -> Hint("Пинг до ${loc!!.place}: ${p.title} — замер с этого устройства.")
+        p != null -> Hint("Пинг до ${loc!!.place}: ${p.title} — оценка по расстоянию. Точный замер появится, когда в локации будет ваш VPS.")
+    }
+    vm.opPingNote?.let { Hint(it) }
+    if (!vm.opPinging) TextButton(onClick = vm::opMeasurePing, enabled = !vm.running) { Text("Измерить пинг") }
 }
 
 /** Фильтр тарифов: «Цена до» и «Трафик от»; регионы, локации и тарифы ниже показываются только подходящие. */

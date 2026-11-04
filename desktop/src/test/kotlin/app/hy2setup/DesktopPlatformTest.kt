@@ -61,7 +61,7 @@ class DesktopPlatformTest {
         assertEquals("пароль-root", again.password)
         assertEquals("token-xyz", again.ncToken)
         assertFalse(again.monitorSupported)
-        assertFalse(again.vpnSupported)
+        assertFalse(again.hwKeySupported)
         assertFalse(File(dir, "secrets.properties").readText().contains("пароль-root"))
     }
 }

@@ -49,50 +49,13 @@ class ScreenshotTest {
     @Test fun homeLight() = shot("1-home", 0, false)
     @Test fun homeDark() = shot("1-home", 0, true)
     @Test fun homeEmpty() = shot("1-home-empty", 0, false, withProfile = false)
-    @Test fun vpnLight() = shot("1b-vpn", 1, false)
-    @Test fun vpnDark() = shot("1b-vpn", 1, true)
-    @Test fun vpnEmpty() = shot("1b-vpn-empty", 1, false, withProfile = false)
-    @Test fun serverLight() = shot("2-server", 2, false)
-    @Test fun serverDark() = shot("2-server", 2, true)
-    @Test fun cloudLight() = shot("3-cloud", 3, false)
-    @Test fun cloudDark() = shot("3-cloud", 3, true)
-    @Test fun toolsLight() = shot("4-tools", 4, false)
-    @Test fun toolsDark() = shot("4-tools", 4, true)
-
-    /** Вкладка «Сервер»: выбрано несколько протоколов сразу. */
-    @Test
-    @Config(qualifiers = "w411dp-h1500dp-xxhdpi")
-    fun serverMulti() {
-        val model = vm(2).apply {
-            serverMode = app.hy2setup.ServerMode.VLESS
-            toggleServerMode(app.hy2setup.ServerMode.XHTTP); toggleServerMode(app.hy2setup.ServerMode.TG)
-        }
-        org.junit.Assert.assertEquals(
-            listOf(app.hy2setup.ServerMode.VLESS, app.hy2setup.ServerMode.XHTTP, app.hy2setup.ServerMode.TG), model.serverModeList,
-        )
-        captureRoboImage("build/screens/2-server-multi-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
-    }
-
-    /** Вкладка VPN: на сервере три протокола, выбран Hysteria2. */
-    @Test
-    fun vpnHysteria() {
-        val model = vm(1).apply {
-            plusProfile = plusProfile!!.copy(awg = app.hy2setup.Awg.generate("vpn.example.org", 34127), awgOn = true, xhttpOn = true)
-            selectVpnProto(app.hy2setup.vpn.VpnProtocol.HY2)
-        }
-        org.junit.Assert.assertEquals(app.hy2setup.vpn.VpnProtocol.HY2, model.vpnProto)
-        captureRoboImage("build/screens/1b-vpn-hy2-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
-    }
-
-    @Test
-    @Config(qualifiers = "w411dp-h1500dp-xxhdpi")
-    fun serverAwg() {
-        val model = vm(2).apply { serverMode = app.hy2setup.ServerMode.AWG; protocol = app.hy2setup.Protocol.AWG }
-        captureRoboImage("build/screens/2-server-awg-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
-    }
+    @Test fun cloudLight() = shot("2-cloud", 1, false)
+    @Test fun cloudDark() = shot("2-cloud", 1, true)
+    @Test fun toolsLight() = shot("3-tools", 2, false)
+    @Test fun toolsDark() = shot("3-tools", 2, true)
 
     @Test fun regionThenLocation() {
-        val model = vm(3, withProfile = false)
+        val model = vm(1, withProfile = false)
         val sz = app.hy2setup.OpSize("44", "", "General", "1", "1024", "20", "1000", "1000", "4.00", "0.006", true)
         model.opSizes += sz
         model.opLocations += listOf(
@@ -126,17 +89,75 @@ class ScreenshotTest {
     @Test
     fun homeTrafficBar() {
         val model = vm(0).apply {
-            plusProfile = plusProfile!!.copy(vps = ProfileVps("123", "203.0.113.10", "vpn", trafficLimitGb = 1000.0), trafficGb = 312.4)
+            plusProfile = plusProfile!!.copy(vps = ProfileVps("123", "203.0.113.10", "vpn", trafficLimitGb = 1000.0), trafficGb = 312.4, checkAt = System.currentTimeMillis(), status = mapOf("VLESS" to true, "Hysteria2" to true))
         }
         org.junit.Assert.assertEquals(1000.0, model.trafficLimitGb(model.plusProfile!!))
         captureRoboImage("build/screens/1-home-traffic-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
+    }
+
+    /** «Инструменты → Аппаратные ключи»: YubiKey (ed25519, резидентный) и Рутокен (ecdsa, нерезидентный). */
+    @Test
+    @Config(qualifiers = "w411dp-h1600dp-xxhdpi")
+    fun hwKeysCard() {
+        val model = vm(2, withProfile = false)
+        val yk = app.hy2setup.hwkey.FakeFidoToken(pin = "123456", ed25519 = true, name = "YubiKey 5C Nano")
+        val ru = app.hy2setup.hwkey.FakeFidoToken(ed25519 = false, name = "Рутокен MFA")
+        model.setHwKeysForTest(listOf(
+            app.hy2setup.hwkey.Hw.create(yk, resident = true) { "123456" },
+            app.hy2setup.hwkey.Hw.create(ru, resident = false) { null },
+        ))
+        org.junit.Assert.assertTrue(model.hwKeySupported)
+        captureRoboImage("build/screens/3-tools-hwkeys-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { HwKeysCard(model, startExpanded = true) }
+                }
+            }
+        }
+        // включить вход по ключу нельзя, пока вход не проверен
+        model.setHwLoginEnabled(true)
+        org.junit.Assert.assertFalse(model.hwLogin)
+    }
+
+    /** Выбор локации с пингом: замер (до VPS в локации) и оценки «≈»; локации региона — по возрастанию пинга. */
+    @Test
+    fun orderPing() {
+        val model = vm(1, withProfile = false)
+        model.opSizes += app.hy2setup.OpSize("44", "", "General", "1", "1024", "20", "1000", "1000", "4.00", "0.006", true)
+        model.opLocations += listOf(
+            app.hy2setup.OpLocation("1", "Europe", "Italy", "Florence", setOf("44")),
+            app.hy2setup.OpLocation("2", "Europe", "Netherlands", "Amsterdam", setOf("44")),
+            app.hy2setup.OpLocation("3", "North America", "USA", "Miami", setOf("44")),
+        )
+        model.opTemplates += app.hy2setup.OpTemplate("t", "Debian 12")
+        model.opTemplateId = "t"
+        model.opCatalogLoaded = true
+        model.opPing["1"] = app.hy2setup.PingResult(58, estimated = true)
+        model.opPing["2"] = app.hy2setup.PingResult(41, estimated = false)
+        model.opPing["3"] = app.hy2setup.PingResult(142, estimated = true)
+        model.opSelectRegion("Europe")
+        org.junit.Assert.assertEquals(listOf("2", "1"), model.opLocationsInRegion.map { it.id })
+        org.junit.Assert.assertEquals(41, model.opRegionPing("Europe")?.ms)
+        captureRoboImage("build/screens/3-cloud-order-ping-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { VpsOrderForm(model) }
+                }
+            }
+        }
     }
 
     /** Заказ VPS с фильтром: тарифы дороже $10 видны, фильтр «до $20, от 2 ТБ» оставляет подходящие. */
     @Test
     @Config(qualifiers = "w411dp-h1100dp-xxhdpi")
     fun orderFilter() {
-        val model = vm(3, withProfile = false)
+        val model = vm(1, withProfile = false)
         fun sz(id: String, ram: String, traffic: String, price: String) =
             app.hy2setup.OpSize(id, "", "General", "1", ram, "20", traffic, "1000", price, "0.01", true)
         model.opSizes += listOf(sz("44", "1024", "1000", "4.00"), sz("45", "2048", "2000", "12.00"), sz("46", "4096", "5000", "24.00"))
@@ -167,7 +188,7 @@ class ScreenshotTest {
             }
         }
         // фильтр запоминается
-        org.junit.Assert.assertEquals(app.hy2setup.OpFilter(20, 2000), vm(3, withProfile = false).opFilter)
+        org.junit.Assert.assertEquals(app.hy2setup.OpFilter(20, 2000), vm(1, withProfile = false).opFilter)
         model.opSetFilter(app.hy2setup.OpFilter())
     }
 
@@ -198,14 +219,14 @@ class ScreenshotTest {
         }
     }
 
-    /** Длинный журнал на вкладке «Сервер»: окно результата невысокое, внутри — пролистывание. */
+    /** Длинный журнал в «Инструментах»: окно результата невысокое, внутри — пролистывание. */
     @Test
     fun serverLongLog() {
         val model = vm(2).apply {
             log.clear()
             log += (1..12).flatMap { listOf("▶ Шаг $it: установка компонента $it", "OK: компонент $it готов") } + "Готово."
         }
-        captureRoboImage("build/screens/2-server-longlog-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
+        captureRoboImage("build/screens/3-tools-longlog-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
     }
 
     /** «Создать новый сервер»: выбор протоколов и портов (бывший комбайн). */
@@ -292,21 +313,6 @@ class ScreenshotTest {
         com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/1-home-delete-light.png")
     }
 
-    /** Список «Протоколы» на вкладке «Сервер» открыт: столбец с галочками. */
-    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
-    @Test fun protocolsDropdown() {
-        val model = vm(2).apply { serverMode = app.hy2setup.ServerMode.VLESS; toggleServerMode(app.hy2setup.ServerMode.XHTTP) }
-        compose.setContent { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
-        compose.onNodeWithText("Что ставить").performClick()
-        compose.waitForIdle()
-        com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/2-server-protocols-light.png")
-        // список не закрывается при выборе: отметили ещё и Hysteria2
-        compose.onNodeWithText("Hysteria2 + Salamander").performClick()
-        compose.waitForIdle()
-        org.junit.Assert.assertTrue(app.hy2setup.ServerMode.HY2 in model.serverModes)
-        compose.onNodeWithText("AmneziaWG 3.1").assertExists()
-    }
-
     private fun v2vm() = vm(0).apply {
         val u = app.hy2setup.ProfileUser.create("Мама", emptyList())
         val p0 = plusProfile!!
@@ -350,15 +356,9 @@ class ScreenshotTest {
     }
 
     @Test
-    fun serverQuick() {
-        val model = vm(2)
-        captureRoboImage("build/screens/v2-server-quick-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
-    }
-
-    @Test
     @Config(qualifiers = "w411dp-h1100dp-xxhdpi")
     fun toolsMonitor() {
-        val model = vm(4)
+        val model = vm(2)
         captureRoboImage("build/screens/v2-tools-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
     }
 
@@ -377,7 +377,7 @@ class ScreenshotTest {
 
     @Test
     @Config(qualifiers = "w411dp-h1400dp-xxhdpi")
-    fun vpnPanel() {
+    fun homeTall() {
         val model = vm(0)
         captureRoboImage("build/screens/v3-home-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
     }

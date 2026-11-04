@@ -1,7 +1,5 @@
 package app.hy2setup
 
-import app.hy2setup.vpn.VpnConfig
-import app.hy2setup.vpn.VpnProtocol
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateMapOf
@@ -30,18 +28,16 @@ import java.util.concurrent.atomic.AtomicReference
 import app.hy2setup.platform.Device
 
 /** Всё, что нужно для создания A-записи. */
-/** Что настраивается в разделе «Сервер». */
+/** Что настраивается в настройках установки. */
 enum class ServerMode(val title: String) { HY2("Hysteria2"), VLESS("VLESS"), XHTTP("VLESS XHTTP"), AWG("AmneziaWG"), TG("Telegram") }
 
-/** Режим раздела «Сервер» для протокола. */
+/** Режим «Доступа к серверам» для протокола. */
 fun modeOf(p: Protocol) = when (p) { Protocol.HY2 -> ServerMode.HY2; Protocol.VLESS -> ServerMode.VLESS; Protocol.AWG -> ServerMode.AWG }
 
 /** Разделы нижней навигации. */
 const val TAB_HOME = 0
-const val TAB_VPN = 1
-const val TAB_SERVER = 2
-const val TAB_CLOUD = 3
-const val TAB_TOOLS = 4
+const val TAB_CLOUD = 1
+const val TAB_TOOLS = 2
 
 /** Сколько помнить отказ локации «нет мест», мс. */
 private const val BAD_LOCATION_MS = 24 * 3600_000L
@@ -137,7 +133,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     // ---------- Раздел нижней навигации (TAB_HOME … TAB_TOOLS) ----------
     var selectedTab by mutableStateOf(TAB_HOME)
-    /** Протоколы, выбранные на вкладке «Сервер»: «Установить» ставит их все по очереди. */
+    /** Протоколы, выбранные в «Доступе к серверам» (Инструменты): «Установить» ставит их все по очереди. */
     var serverModes by mutableStateOf(
         prefs.getString("serverModes", null)?.split(',')?.mapNotNull { n -> ServerMode.entries.firstOrNull { it.name == n } }?.toSet()
             ?.takeIf { it.isNotEmpty() } ?: setOf(modeOf(protocol)),
@@ -148,7 +144,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         get() = ServerMode.entries.first { it in serverModes }
         set(v) { applyServerModes(setOf(v)) }
 
-    /** Включает или выключает протокол на вкладке «Сервер» (хотя бы один остаётся выбранным). */
+    /** Включает или выключает протокол в «Доступе к серверам» (Инструменты) (хотя бы один остаётся выбранным). */
     fun toggleServerMode(m: ServerMode) {
         val next = if (m in serverModes) serverModes - m else serverModes + m
         if (next.isNotEmpty()) applyServerModes(next)
@@ -260,7 +256,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     var plusHy2 by mutableStateOf(prefs.getBoolean("plusHy2", prefs.getBoolean("combineHy2", true)))
     /** VLESS + Reality с маскировкой под свой домен (или под [realitySni] без Hysteria2). */
     var plusVless by mutableStateOf(prefs.getBoolean("plusVless", prefs.getBoolean("combineVless", true)))
-    /** Telegram-прокси (mtg); порт и домен — общие с вкладкой «Сервер». */
+    /** Telegram-прокси (mtg); порт и домен — общие с прежней вкладкой «Сервер». */
     var plusTg by mutableStateOf(prefs.getBoolean("plusTg", prefs.getBoolean("combineTg", false)))
     /** Ставить при замене сервера ещё и AmneziaWG 3.1 (ключи — в профиле, ссылка постоянная). */
     var plusAwg by mutableStateOf(prefs.getBoolean("plusAwg", true))
@@ -297,11 +293,190 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     var newTtl by mutableStateOf("300")
     var newPriority by mutableStateOf("10")
 
-    private val runner = SshRunner(File(platform.dataDir, "known_hosts")) { message ->
+    private val runner = SshRunner(File(platform.dataDir, "known_hosts"), hwTransport = ::hwTransport, confirmHostKey = { message ->
         val answer = CompletableDeferred<Boolean>()
         hostKeyAnswer = answer
         hostKeyPrompt = message
         answer.await()
+    })
+
+    // ---------- Аппаратные ключи (Рутокен MFA, YubiKey) для входа по SSH ----------
+    val hwKeySupported: Boolean get() = platform.hwKeySupported
+    /** Ключи на токенах (открытые части и credential id); закрытые ключи — только в токенах. */
+    val hwKeys = mutableStateListOf<app.hy2setup.hwkey.HwKey>().apply {
+        addAll(app.hy2setup.hwkey.HwKey.listFromJson(secrets.get("hwKeys").ifEmpty { secrets.get("hwKey") }))
+    }
+    /** Отпечаток ключа для входа (вставлен может быть только один токен — выбираем явно). */
+    private var hwSelected by mutableStateOf(prefs.getString("hwSelected", "") ?: "")
+    /** Ключ для входа: выбранный, иначе первый. */
+    val hwKey: app.hy2setup.hwkey.HwKey? get() = hwKeys.firstOrNull { it.fingerprint == hwSelected } ?: hwKeys.firstOrNull()
+    /** Ключи, вход по которым уже проверен на сервере (отпечатки). */
+    private var hwVerifiedSet by mutableStateOf(prefs.getString("hwVerifiedKeys", "").orEmpty().split(",").filter { it.isNotBlank() }.toSet())
+    /** Вход по выбранному ключу уже проверен — только после этого его можно включить для всех входов. */
+    val hwVerified: Boolean get() = hwKey?.fingerprint in hwVerifiedSet
+    /** Входить на серверы по аппаратному ключу («Доступ к серверам» и серверы Главной). */
+    var hwLogin by mutableStateOf(platform.hwKeySupported && prefs.getBoolean("hwLogin", false) && hwKeys.isNotEmpty())
+        private set
+    /** Текст окна «Коснитесь токена»; null — окно закрыто. */
+    var hwPrompt by mutableStateOf<String?>(null)
+        private set
+    /** Запрос PIN токена (текст); null — не спрашиваем. */
+    var pinPrompt by mutableStateOf<String?>(null)
+        private set
+    private var pinAnswer: CompletableDeferred<String?>? = null
+
+    /** Тестам: подменить список ключей. */
+    internal fun setHwKeysForTest(keys: List<app.hy2setup.hwkey.HwKey>) { hwKeys.clear(); hwKeys.addAll(keys) }
+
+    private fun saveHwKeys() {
+        secrets.put("hwKeys", app.hy2setup.hwkey.HwKey.listToJson(hwKeys))
+        secrets.put("hwKey", "")
+        prefs.edit().putString("hwSelected", hwSelected).putString("hwVerifiedKeys", hwVerifiedSet.joinToString(",")).putBoolean("hwLogin", hwLogin).apply()
+    }
+
+    /** Канал к токену: открывается, показывая «вставьте токен и коснитесь», закрывается через close(). */
+    private inner class HwSession(private val t: app.hy2setup.hwkey.HwTransport) : app.hy2setup.hwkey.HwTransport, java.io.Closeable {
+        override val name: String get() = t.name
+        override fun send(ins: Int, p1: Int, data: ByteArray): ByteArray = t.send(ins, p1, data)
+        override fun cbor(request: ByteArray): ByteArray = t.cbor(request)
+        override fun close() { hwPrompt = null; platform.hwKeyClose() }
+    }
+
+    /** Ждёт токен (USB-C или NFC) и возвращает канал к нему; окно «Коснитесь токена» висит до close(). */
+    private fun hwTransport(): HwSession {
+        hwPrompt = "Вставьте токен (Рутокен MFA или YubiKey) в разъём USB-C и коснитесь его, когда он замигает."
+        val t = try {
+            platform.hwKeyOpen(60_000)
+        } catch (e: Exception) {
+            hwPrompt = null; platform.hwKeyClose(); throw e
+        }
+        hwPrompt = "Коснитесь токена${t.name.takeIf { it.isNotBlank() }?.let { " ($it)" } ?: ""}."
+        return HwSession(t)
+    }
+
+    /** Спрашивает PIN токена у человека (из фонового потока): ждёт ответ в окне; null — отмена. PIN нигде не хранится. */
+    private fun askPin(): String? {
+        val answer = CompletableDeferred<String?>()
+        pinAnswer = answer
+        val shown = hwPrompt
+        hwPrompt = null
+        pinPrompt = "Токен просит PIN — он нужен только сейчас, при создании или загрузке резидентного ключа. Вход на серверы будет без PIN."
+        val pin = kotlinx.coroutines.runBlocking { answer.await() }
+        pinPrompt = null
+        hwPrompt = shown
+        return pin
+    }
+
+    fun answerPin(pin: String?) {
+        pinAnswer?.complete(pin?.takeIf { it.isNotEmpty() })
+        pinAnswer = null
+        pinPrompt = null
+    }
+
+    fun hwCancel() {
+        platform.hwKeyCancel()
+        hwPrompt = null
+        answerPin(null)
+    }
+
+    /** Создаёт новый ключ на токене (касание; для резидентного токен может попросить PIN один раз). */
+    fun hwCreate(resident: Boolean) {
+        launchTask(log) {
+            addLog(log, "Создаю " + (if (resident) "резидентный" else "нерезидентный") + " ключ SSH на токене…")
+            val key = withContext(Dispatchers.IO) { hwTransport().use { app.hy2setup.hwkey.Hw.create(it, resident, ::askPin) } }
+            hwKeys.removeAll { it.fingerprint == key.fingerprint }
+            hwKeys.add(key)
+            hwSelected = key.fingerprint
+            hwLogin = false
+            saveHwKeys()
+            addLog(log, "✓ Ключ создан: ${key.title} (${key.fingerprint}). Закрытая часть не покидает токен.")
+            addLog(log, "Теперь «Добавить ключ на сервер», затем «Проверить вход».")
+        }
+    }
+
+    /** Загружает с токена резидентные ключи «ssh:» (новый телефон): нужен PIN токена. */
+    fun hwLoadResident() {
+        launchTask(log) {
+            addLog(log, "Читаю резидентные ключи с токена…")
+            val keys = withContext(Dispatchers.IO) { hwTransport().use { app.hy2setup.hwkey.Hw.loadResident(it, ::askPin) } }
+            if (keys.isEmpty()) { addLog(log, "На токене нет резидентных ключей SSH."); return@launchTask }
+            var added = 0
+            keys.forEach { k -> if (hwKeys.none { it.fingerprint == k.fingerprint }) { hwKeys.add(k); added++ } }
+            if (hwSelected.isEmpty() || hwKeys.none { it.fingerprint == hwSelected }) hwSelected = keys.first().fingerprint
+            saveHwKeys()
+            addLog(log, "✓ На токене ключей: ${keys.size}, добавлено в приложение: $added.")
+        }
+    }
+
+    fun hwSelect(fingerprint: String) {
+        if (hwKeys.none { it.fingerprint == fingerprint }) return
+        hwSelected = fingerprint
+        if (fingerprint !in hwVerifiedSet) hwLogin = false
+        saveHwKeys()
+    }
+
+    /** Убирает ключ из приложения (на токене и на серверах он остаётся). */
+    fun hwRemove(fingerprint: String) {
+        hwKeys.removeAll { it.fingerprint == fingerprint }
+        hwVerifiedSet = hwVerifiedSet - fingerprint
+        if (hwSelected == fingerprint) hwSelected = hwKeys.firstOrNull()?.fingerprint.orEmpty()
+        if (hwKeys.isEmpty() || !hwVerified) hwLogin = false
+        saveHwKeys()
+    }
+
+    /** Включает или выключает вход по аппаратному ключу; включить можно только после успешной проверки входа. */
+    fun setHwLoginEnabled(on: Boolean) {
+        if (on && (hwKey == null || !hwVerified)) { fail("Сначала проверьте вход по аппаратному ключу на сервере."); return }
+        hwLogin = on
+        saveHwKeys()
+    }
+
+    /** Добавляет выбранный ключ токена в authorized_keys сервера из «Доступа к серверам» (вход — по паролю или ключу). */
+    fun hwInstall() {
+        val key = hwKey ?: run { fail("Сначала создайте ключ на токене."); return }
+        val ssh = buildSshConfig(allowHw = false) ?: return
+        launchTask(log) {
+            addLog(log, "Добавляю ключ (${key.title}) на ${ssh.host}…")
+            val code = runner.runScript(ssh, Scripts.addAuthorizedKey(key.authorizedKeysLine())) { postLog(log, it) }
+            if (code != 0) throw IllegalStateException("Ключ добавить не удалось (код $code).")
+        }
+    }
+
+    /** Ставит выбранный ключ токена на все серверы Главной (вход — по ключу приложения или паролю root). */
+    fun hwInstallAll() {
+        val key = hwKey ?: run { fail("Сначала создайте ключ на токене."); return }
+        val targets = stableProfiles.mapNotNull { p -> p.vps?.let { p.fqdn to it.ip } }
+        if (targets.isEmpty()) { fail("На Главной нет серверов."); return }
+        launchTask(log) {
+            for ((fqdn, ip) in targets) {
+                val ssh = when {
+                    privateKey.isNotBlank() -> SshConfig(ip, 22, "root", password, privateKey, passphrase)
+                    password.isNotEmpty() -> SshConfig(ip, 22, "root", password, "", "")
+                    else -> throw IllegalStateException("Нужен пароль root или приватный ключ в «Доступе к серверам».")
+                }
+                addLog(log, "$fqdn ($ip):")
+                try {
+                    runner.runScript(ssh, Scripts.addAuthorizedKey(key.authorizedKeysLine())) { postLog(log, it) }
+                } catch (e: SshException) {
+                    addLog(log, "✗ $fqdn: ${e.message}")
+                }
+            }
+        }
+    }
+
+    /** Пробный вход по выбранному ключу на сервер из «Доступа к серверам»: касание токена, затем короткий скрипт. */
+    fun hwTest() {
+        val key = hwKey ?: run { fail("Сначала создайте ключ на токене."); return }
+        val ssh = buildSshConfig(allowHw = false, needSecret = false)?.copy(privateKey = "", hwKey = key) ?: return
+        launchTask(log) {
+            addLog(log, "Вхожу на ${ssh.host} по ключу ${key.title} — коснитесь токена…")
+            val seen = AtomicBoolean(false)
+            runner.runScript(ssh, Scripts.ping()) { if (it.trim() == Scripts.PING_MARKER) seen.set(true) }
+            if (!seen.get()) throw IllegalStateException("Сервер не ответил после входа.")
+            hwVerifiedSet = hwVerifiedSet + key.fingerprint
+            saveHwKeys()
+            addLog(log, "✓ Вход по ключу ${key.title} на ${ssh.host} работает. Включите «Входить по аппаратному ключу», чтобы им пользовались все входы.")
+        }
     }
 
     fun answerHostKey(trust: Boolean) {
@@ -355,12 +530,12 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             throw e
         } catch (e: Exception) {
             addLog(target, "ОШИБКА БЕЗОПАСНОСТИ: ${e.message ?: e.javaClass.simpleName}")
-            addLog(target, "Установка выполнена, но защита не включена. Ссылка рабочая; защиту можно включить позже: «Сервер» → ⋮ → «Защитить сервер».")
+            addLog(target, "Установка выполнена, но защита не включена. Ссылка рабочая; защиту можно включить позже: «Инструменты» → «Доступ к серверам» → «Защитить сервер».")
             ssh
         }
     }
 
-    /** Проверка перед запуском режима безопасности на вкладке «Сервер». */
+    /** Проверка перед запуском режима безопасности в «Доступе к серверам» (Инструменты). */
     private fun securityProblem(): String? = when {
         !hardenBeforeInstall -> null
         privateKey.isBlank() ->
@@ -380,7 +555,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     }
 
     /**
-     * «Установить» на вкладке «Сервер»: все выбранные протоколы по очереди. Поля проверяются заранее, DNS
+     * «Установить» в «Доступе к серверам» (Инструменты): все выбранные протоколы по очереди. Поля проверяются заранее, DNS
      * настраивается один раз; ошибка одного протокола не мешает остальным. Защита сервера — в самом конце.
      */
     fun install() {
@@ -451,7 +626,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         return n
     }
 
-    /** AmneziaWG 3.1 на вкладке «Сервер»: новые ключи, адрес в ссылке — домен (если есть) или IP сервера. */
+    /** AmneziaWG 3.1 в «Доступе к серверам» (Инструменты): новые ключи, адрес в ссылке — домен (если есть) или IP сервера. */
     private fun planAwg(): ProtoJob? {
         val port = awgPortOrNull { fail(it) } ?: return null
         val d = domain.trim().lowercase()
@@ -537,7 +712,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    /** Новый путь XHTTP для установки с вкладки «Сервер». */
+    /** Новый путь XHTTP для установки из «Доступа к серверам». */
     private fun newXhttpPath() = "/" + randomHex(5)
 
     private fun planVless(dnsPlan: DnsPlan?, xhttp: Boolean = false): ProtoJob? {
@@ -628,34 +803,6 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    /** Получает ссылки по уже установленным на сервере протоколам. */
-    fun fetchLinks() {
-        val ssh = buildSshConfig() ?: return
-        persist()
-        launchTask(log) {
-            resultLinks.clear()
-            addLog(log, "Подключаюсь к ${ssh.host}:${ssh.port} и читаю настройки…")
-            val markers = java.util.Collections.synchronizedList(mutableListOf<String>())
-            var code = 0
-            if (serverModes.any { it != ServerMode.TG }) code = runner.runScript(ssh, Scripts.exportLinks()) { line ->
-                if (Links.isMarker(line)) markers += line else postLog(log, line)
-            }
-            val links = Links.fromExport(markers.toList(), ssh.host).toMutableList()
-            if (ServerMode.TG in serverModes) {
-                val tg = java.util.Collections.synchronizedList(mutableListOf<String>())
-                runner.runScript(ssh, Scripts.exportTelegram()) { line -> if (Links.isMarker(line)) tg += line else postLog(log, line) }
-                Links.telegramFromMarkers(tg.toList(), ssh.host)?.let { links += it }
-            }
-            rememberProfile(ssh)
-            resultLinks.addAll(links)
-            when {
-                code != 0 -> addLog(log, "Завершено с кодом $code.")
-                links.isEmpty() -> addLog(log, "Ссылки получить не удалось.")
-                else -> addLog(log, "Ссылок получено: ${links.size}. Они ниже.")
-            }
-        }
-    }
-
     /** Создаёт A-запись. Возвращает IPv4 сервера. */
     private suspend fun setupDnsRecord(
         sshHost: String,
@@ -666,7 +813,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         dropAaaa: Boolean = false,
     ): String {
         val ip = resolveIpv4(sshHost)
-            ?: throw NameComException("Для A-записи нужен IPv4-адрес сервера. Введите IPv4 (например, 203.0.113.10) в поле «Сервер».")
+            ?: throw NameComException("Для A-записи нужен IPv4-адрес сервера. Введите IPv4 (например, 203.0.113.10) в поле «Адрес» («Инструменты» → «Доступ к серверам»).")
         val client = NameComClient(plan.username, plan.token)
         addLog(target, "Проверяю доступ к name.com…")
         client.hello()
@@ -803,11 +950,6 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         addLog(target, if (problems == 0) "Проверка завершена: проблем не найдено." else "Проверка завершена: найдено проблем — $problems.")
         return problems
     }
-    /** Перезапуск служб всех выбранных протоколов. */
-    fun restartService() = simpleServerScript(
-        *serverModeList.map { if (it == ServerMode.TG) Scripts.restartTelegram() else Scripts.restart(protoOf(it)) }.distinct().toTypedArray(),
-    )
-
     /** Удаление всех выбранных протоколов с сервера. */
     fun remove() {
         resultLinks.clear()
@@ -910,10 +1052,10 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    /** Подставить IPv4 сервера с вкладки «Сервер» в значение новой записи. */
+    /** Подставить IPv4 сервера из «Доступа к серверам» в значение новой записи. */
     fun fillServerIp() {
         val h = host.trim()
-        if (h.isEmpty()) { failDns("На вкладке «Сервер» не указан адрес сервера."); return }
+        if (h.isEmpty()) { failDns("В «Доступе к серверам» (Инструменты) не указан адрес сервера."); return }
         scope.launch {
             val ip = resolveIpv4(h)
             if (ip == null) failDns("Не удалось определить IPv4 для «$h».") else { newType = "A"; newAnswer = ip; dnsError = null }
@@ -1028,6 +1170,61 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     val opLocationsOrderable: List<OpLocation>
         get() = OneProviderClient.orderableLocations(opLocations, opSizes, opFilter).sortedBy { opIsBad(it.id) }
 
+    // ---------- Пинг до локаций OneProvider ----------
+    /** Пинг по id локации: замер (до тестового адреса или вашего VPS в локации) или оценка по расстоянию. */
+    val opPing = mutableStateMapOf<String, PingResult>()
+    var opPinging by mutableStateOf(false)
+        private set
+    /** Почему у части локаций нет даже оценки (не удалось узнать ваше местоположение). */
+    var opPingNote by mutableStateOf<String?>(null)
+        private set
+    private var myGeo: Pair<Double, Double>? = null
+
+    /** Адрес для замера пинга локации: тестовый адрес от OneProvider или IP вашего VPS в этой локации. */
+    private fun pingTarget(loc: OpLocation): String? = loc.testHost.ifEmpty { null }
+        ?: opVms.firstOrNull { vm -> IPV4.matches(vm.ip) && (vm.location == loc.id || (loc.city.isNotEmpty() && vm.location.contains(loc.city, ignoreCase = true))) }?.ip
+
+    /** Меряет пинг до подходящих локаций (в фоне, не блокируя интерфейс). */
+    fun opMeasurePing() {
+        if (opPinging) return
+        opPinging = true
+        scope.launch {
+            try {
+                if (!opLoaded && opApiKey.isNotBlank() && opClientKey.isNotBlank()) {
+                    runCatching { OneProviderClient(opApiKey.trim(), opClientKey.trim()).listVms() }.getOrNull()?.let { setOpVms(it) }
+                }
+                if (myGeo == null) myGeo = Ping.myLocation()
+                val geo = myGeo
+                val locs = opLocationsOrderable
+                opPingNote = if (geo == null) "Не удалось определить ваше местоположение — оценки пинга нет, только замеры." else null
+                val gate = kotlinx.coroutines.sync.Semaphore(8)
+                kotlinx.coroutines.coroutineScope {
+                    locs.forEach { loc ->
+                        launch {
+                            gate.acquire()
+                            try {
+                                val real = pingTarget(loc)?.let { Ping.tcpRttMs(it) }
+                                val est = if (real == null && geo != null) Ping.cityCoord(loc.city)?.let { Ping.estimateMs(geo, it) } else null
+                                when {
+                                    real != null -> opPing[loc.id] = PingResult(real, estimated = false)
+                                    est != null -> opPing[loc.id] = PingResult(est, estimated = true)
+                                }
+                            } finally {
+                                gate.release()
+                            }
+                        }
+                    }
+                }
+            } finally {
+                opPinging = false
+            }
+        }
+    }
+
+    /** Лучший пинг в регионе (для списка регионов). */
+    fun opRegionPing(region: String): PingResult? =
+        opLocationsOrderable.filter { it.group == region }.mapNotNull { opPing[it.id] }.minByOrNull { it.ms }
+
     /** Регионы с подходящими локациями: название → сколько в нём локаций без пометки «недоступна». */
     val opRegions: List<Pair<String, Int>>
         get() = opLocationsOrderable.groupBy { it.group }
@@ -1036,7 +1233,8 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     /** Подходящие локации выбранного региона (помеченные — в конце). */
     val opLocationsInRegion: List<OpLocation>
-        get() = opLocationsOrderable.filter { it.group == opRegion }.sortedWith(compareBy({ opIsBad(it.id) }, { it.place }))
+        get() = opLocationsOrderable.filter { it.group == opRegion }
+            .sortedWith(compareBy({ opIsBad(it.id) }, { opPing[it.id]?.ms ?: Int.MAX_VALUE }, { it.place }))
 
     fun opSelectRegion(region: String) {
         opRegion = region
@@ -1140,6 +1338,8 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             if (tpls.none { it.id == opTemplateId }) opTemplateId = OneProviderClient.preferredTemplate(tpls)?.id.orEmpty()
             opCatalogLoaded = true
             loadBalance()
+            opPing.clear()
+            opMeasurePing()
             val okLocs = opLocationsOrderable
             val okSizes = sizes.count { sz -> okLocs.any { OneProviderClient.isOrderable(sz, it, opFilter) } }
             addLog(opLog, "Подходящих локаций: ${okLocs.size} из ${locs.size} в ${opRegions.size} регионах, тарифов: $okSizes из ${sizes.size} " +
@@ -1183,16 +1383,16 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    /** Подставляет публичную часть приватного ключа с вкладки «Сервер». */
+    /** Подставляет публичную часть приватного ключа из «Доступа к серверам». */
     fun opKeyFromServerTab() {
         opError = null
         if (privateKey.isBlank()) {
-            opError = "На вкладке «Сервер» не задан приватный ключ."
+            opError = "В «Доступе к серверам» (Инструменты) не задан приватный ключ."
             return
         }
         val pub = SshKeys.publicOf(privateKey, passphrase)
         if (pub == null) {
-            opError = "Приватный ключ на вкладке «Сервер» не читается или неверен пароль от ключа."
+            opError = "Приватный ключ в «Доступе к серверам» (Инструменты) не читается или неверен пароль от ключа."
             return
         }
         opNewKeyValue = pub
@@ -1336,7 +1536,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         opLog.add("Удаление отменено — VPS с перерасходом трафика оставлены.")
     }
 
-    /** Подставляет VPS на вкладку «Сервер» и переключается на неё. */
+    /** Подставляет VPS в «Инструменты → Доступ к серверам» и переключается туда. */
     fun useOnServerTab(ip: String, rootPassword: String = "", keyed: Boolean = false) {
         if (ip.isBlank()) return
         host = ip
@@ -1348,8 +1548,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         hardenBeforeInstall = true
         errorMessage = null
         persist()
-        selectedTab = TAB_SERVER
-        serverMode = modeOf(protocol)
+        selectedTab = TAB_TOOLS
     }
 
     // =====================================================================
@@ -1382,18 +1581,18 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    /** Проверка ключа кабинета и приватного ключа вкладки «Сервер» для режима безопасности на новом VPS. */
+    /** Проверка ключа кабинета и приватного ключа «Доступа к серверам» для режима безопасности на новом VPS. */
     private fun secureKeyProblem(): String? {
         val selectedPubs = opKeys.filter { it.uuid in opKeySel }.map { it.value }
         return when {
             opKeySel.isEmpty() ->
                 "Безопасность: отметьте SSH-ключ из кабинета — по нему приложение войдёт на новый VPS."
             privateKey.isBlank() ->
-                "Безопасность: вставьте приватную часть этого ключа на вкладке «Сервер» (поле «Приватный ключ»)."
+                "Безопасность: вставьте приватную часть этого ключа в «Доступе к серверам» (Инструменты) (поле «Приватный ключ»)."
             SshKeys.publicOf(privateKey, passphrase) == null ->
-                "Безопасность: приватный ключ на вкладке «Сервер» не читается или неверен пароль от ключа."
+                "Безопасность: приватный ключ в «Доступе к серверам» (Инструменты) не читается или неверен пароль от ключа."
             !SshKeys.matchesAny(privateKey, passphrase, selectedPubs) ->
-                "Безопасность: приватный ключ на вкладке «Сервер» не соответствует ни одному из отмеченных ключей кабинета."
+                "Безопасность: приватный ключ в «Доступе к серверам» (Инструменты) не соответствует ни одному из отмеченных ключей кабинета."
             else -> null
         }
     }
@@ -1461,7 +1660,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             if (System.currentTimeMillis() - start > limitMs) {
                 throw IllegalStateException(
                     when {
-                        phoneBlocksSsh == true -> "Сеть ${Device.GEN} не пропускает SSH (порт 22) — VPS $ip, скорее всего, работает. Переключитесь на Wi-Fi или смените режим VPN и запустите ещё раз; созданный VPS можно использовать во вкладке «Сервер» или удалить в «Облаке»."
+                        phoneBlocksSsh == true -> "Сеть ${Device.GEN} не пропускает SSH (порт 22) — VPS $ip, скорее всего, работает. Переключитесь на Wi-Fi или смените режим VPN и запустите ещё раз; созданный VPS останется во вкладке «VPS/DNS» — там его можно удалить."
                         timeouts > 0 -> "VPS $ip не открыл SSH (порт 22) за ${limitMs / 60_000} мин: пакеты с ${Device.GEN} не доходят. Скорее всего, провайдер режет SSH к этому адресу — " +
                             "включите VPN (Happ) для vpngramm и запустите снова. Если и с компьютера через VPN не пускает — откройте консоль VNC в панели OneProvider."
                         else -> "VPS $ip не открыл SSH (порт 22) за ${limitMs / 60_000} мин."
@@ -1659,7 +1858,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         if (plusTargetId == vpsId) plusTargetId = ""
     }
 
-    /** Сохранённые для сервера пароль root и ключ (из списка серверов вкладки «Сервер»). */
+    /** Сохранённые для сервера пароль root и ключ (из списка серверов «Доступа к серверам»). */
     private fun savedCredentials(ip: String): Pair<String, String> {
         val p = ServerProfile(ip, 22, "root", false)
         val key = secrets.get(secretKey(p, "privateKey")).ifBlank { privateKey }
@@ -1704,9 +1903,9 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         val problem = when {
             t.vpsId == profile.vps?.id || t.ip == profile.vps?.ip -> "Профиль уже работает на этом сервере."
             combineServerAlive(t) == false -> "VPS ${t.title} не найден в аккаунте OneProvider — возможно, он удалён. Уберите его из списка."
-            key.isBlank() && pass.isEmpty() -> "Нет доступа к ${t.ip}: нужен пароль root или приватный ключ на вкладке «Сервер»."
-            t.secured && key.isBlank() -> "Сервер ${t.title} пускает только по ключу — вставьте приватный ключ на вкладке «Сервер»."
-            plusSecure && !t.secured && key.isBlank() -> "Безопасность: вставьте приватный ключ на вкладке «Сервер» или выключите «Безопасность»."
+            key.isBlank() && pass.isEmpty() -> "Нет доступа к ${t.ip}: нужен пароль root или приватный ключ в «Доступе к серверам» (Инструменты)."
+            t.secured && key.isBlank() -> "Сервер ${t.title} пускает только по ключу — вставьте приватный ключ в «Доступе к серверам» (Инструменты)."
+            plusSecure && !t.secured && key.isBlank() -> "Безопасность: вставьте приватный ключ в «Доступе к серверам» (Инструменты) или выключите «Безопасность»."
             plusSecure && !t.secured && SshKeys.publicOf(key, passphrase) == null -> "Безопасность: приватный ключ не читается или неверен пароль от ключа."
             else -> null
         }
@@ -1723,7 +1922,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     private suspend fun sshFor(ip: String, target: SnapshotStateList<String>): Pair<SshConfig, SshConfig> {
         val (saved, key) = savedCredentials(ip)
-        // пароль: сохранённый для этого сервера или введённый на вкладке «Сервер», если там тот же адрес
+        // пароль: сохранённый для этого сервера или введённый в «Доступе к серверам» (Инструменты), если там тот же адрес
         val pass = saved.ifEmpty { if (host.trim() == ip) password else "" }
         val keyCfg = SshConfig(ip, 22, "root", pass, key, if (key == privateKey) passphrase else secrets.get(secretKey(ServerProfile(ip, 22, "root", false), "passphrase")))
         if (key.isNotBlank()) {
@@ -1785,7 +1984,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             res.notes.forEach { addLog(plusLog, "• $it") }
             val dns = DnsCheck.resolveA(p.fqdn)
             if (ip !in dns) addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: ${p.fqdn} сейчас указывает на ${dns.joinToString().ifEmpty { "ничто" }}, а не на $ip. При переезде A-запись будет исправлена.")
-            if (vm == null) addLog(plusLog, "VPS с адресом $ip не найден в загруженном списке OneProvider — после переезда старый VPS удалите вручную во вкладке «Облако».")
+            if (vm == null) addLog(plusLog, "VPS с адресом $ip не найден в загруженном списке OneProvider — после переезда старый VPS удалите вручную во вкладке «VPS/DNS».")
             plusLinks.addAll(p.links())
             addLog(plusLog, "Ссылки сервера — ниже. При переносе на другой VPS они не изменятся.")
             importFqdn = ""; importHost = ""
@@ -1949,7 +2148,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     ssh = when {
                         c.password.isNotEmpty() -> keyCfg.copy(privateKey = "", keyPassphrase = "")
                         privateKey.isNotBlank() -> keyCfg
-                        else -> throw IllegalStateException("Провайдер не выдал пароль root, а приватный ключ на вкладке «Сервер» не задан.")
+                        else -> throw IllegalStateException("Провайдер не выдал пароль root, а приватный ключ в «Доступе к серверам» (Инструменты) не задан.")
                     }
                 } else {
                     // 1. Свободный сервер — VPS не покупается
@@ -2010,7 +2209,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     } catch (e: Exception) {
                         done(PlusStep.SECURE, StepStatus.FAILED)
                         addLog(plusLog, "ОШИБКА БЕЗОПАСНОСТИ: ${e.message ?: e.javaClass.simpleName}")
-                        addLog(plusLog, "Протоколы работают, но защита не включена. Её можно включить позже: «Сервер» → ⋮ → «Защитить сервер».")
+                        addLog(plusLog, "Протоколы работают, но защита не включена. Её можно включить позже: «Инструменты» → «Доступ к серверам» → «Защитить сервер».")
                     }
                 } else {
                     done(PlusStep.SECURE, StepStatus.SKIPPED)
@@ -2045,7 +2244,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     // сервер стал основным — в списке он больше не нужен
                     dropCombineServer(existing.vpsId)
                     if (!profile.awgOn && existing.protocols.contains(Awg.TITLE)) {
-                        addLog(plusLog, "На сервере остался прежний AmneziaWG со своей ссылкой — удалить его можно на вкладке «Сервер».")
+                        addLog(plusLog, "На сервере остался прежний AmneziaWG со своей ссылкой — удалить его можно в блоке «Протоколы» на Главной.")
                     }
                 }
                 if (oldVps != null && oldVps.id != newId) {
@@ -2190,7 +2389,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     private fun plusLeftovers(created: OpCreated?, oldVps: ProfileVps?) {
         if (created != null) {
             addLog(plusLog, "Внимание: новый VPS ${created.hostname.ifEmpty { created.id }} уже создан и оплачивается. " +
-                "Чтобы доставить протоколы, нажмите «Обновить сервер» на Главной (ключи и ссылки прежние) или удалите VPS во вкладке «Облако».")
+                "Чтобы доставить протоколы, нажмите «Обновить сервер» на Главной (ключи и ссылки прежние) или удалите VPS во вкладке «VPS/DNS».")
         }
         if (plusSteps[PlusStep.DNS] == StepStatus.DONE && oldVps != null) {
             addLog(plusLog, "A-запись уже указывает на новый VPS. Старый VPS (${oldVps.ip}) не удалён.")
@@ -2209,10 +2408,11 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     /** SSH к текущему серверу профиля: после безопасности вход только по ключу, поэтому ключ — первым. */
     private fun plusSsh(): SshConfig? {
         val v = plusProfile?.vps ?: run { plusError = "У профиля ещё нет сервера."; return null }
+        if (hwLogin) hwKey?.let { return SshConfig(v.ip, 22, "root", password, "", "", it) }
         return when {
             privateKey.isNotBlank() -> SshConfig(v.ip, 22, "root", password, privateKey, passphrase)
             password.isNotEmpty() -> SshConfig(v.ip, 22, "root", password, "", "")
-            else -> run { plusError = "Нужен пароль root или приватный ключ на вкладке «Сервер»."; null }
+            else -> run { plusError = "Нужен пароль root или приватный ключ в «Доступе к серверам» (Инструменты)."; null }
         }
     }
 
@@ -2268,7 +2468,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     val homeProtoAdd: Set<ServerMode> get() = homeProtoChosen - (homeProtoInstalled ?: homeProtoChosen)
     val homeProtoRemove: Set<ServerMode> get() = (homeProtoInstalled ?: emptySet()) - homeProtoChosen
 
-    /** Читает с сервера, какие протоколы стоят; заодно ключи протоколов, поставленных вкладкой «Сервер», становятся постоянными. */
+    /** Читает с сервера, какие протоколы стоят; заодно ключи протоколов, поставленных прежней вкладкой «Сервер», становятся постоянными. */
     fun homeProtoRead() {
         val p = plusProfile ?: return
         if (p.vps == null) return
@@ -2312,13 +2512,13 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         if (plusError == null && (homeProtoAdd.isNotEmpty() || homeProtoRemove.isNotEmpty())) homeProtoConfirm = true
     }
 
-    /** Порт нового Telegram-прокси: из вкладки «Сервер», но не 80 (Let's Encrypt) и не занятый VLESS или сайтом Hysteria2. */
+    /** Порт нового Telegram-прокси: из «Доступа к серверам», но не 80 (Let's Encrypt) и не занятый VLESS или сайтом Hysteria2. */
     private fun newTgPort(p: StableProfile): Int {
         val want = tgPort.trim().toIntOrNull()?.takeIf { it in 1..65535 } ?: 993
         return if (want == 80 || want == 443 || (p.vlessOn && want == p.vlessPort)) 993 else want
     }
 
-    /** Порт нового AmneziaWG: из вкладки «Сервер», но не порт Hysteria2. */
+    /** Порт нового AmneziaWG: из «Доступа к серверам», но не порт Hysteria2. */
     private fun newAwgPort(p: StableProfile): Int =
         awgPort.trim().toIntOrNull()?.takeIf { it in 1..65535 && it != p.hy2Port && it != 443 } ?: Awg.randomPort()
 
@@ -2457,69 +2657,6 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         return vm?.let { limitOf(it) }
     }
 
-    // ---------- Встроенный VPN-клиент ----------
-    /** Российские сайты (.ru/.рф/.su и российские IP) — напрямую, мимо VPN. Включается по желанию. */
-    var vpnBypassRu by mutableStateOf(prefs.getBoolean("vpnBypassRu", false))
-        private set
-    var vpnError by mutableStateOf<String?>(null)
-
-    fun updateVpnBypassRu(v: Boolean) {
-        vpnBypassRu = v
-        prefs.edit().putBoolean("vpnBypassRu", v).apply()
-    }
-
-    /** Сервер вкладки VPN (по умолчанию — выбранный на Главной). */
-    private var vpnServer by mutableStateOf(prefs.getString("vpnServer", "") ?: "")
-    val vpnProfile: StableProfile?
-        get() = stableProfiles.firstOrNull { it.fqdn == vpnServer } ?: plusProfile
-
-    fun selectVpnServer(fqdn: String) {
-        vpnServer = fqdn
-        vpnError = null
-        prefs.edit().putString("vpnServer", fqdn).apply()
-    }
-
-    /** Выбранный протокол; если его нет на сервере — первый из тех, что есть. */
-    private var vpnProtoChoice by mutableStateOf(
-        runCatching { VpnProtocol.valueOf(prefs.getString("vpnProto", "VLESS") ?: "VLESS") }.getOrDefault(VpnProtocol.VLESS),
-    )
-    val vpnProto: VpnProtocol
-        get() {
-            val avail = vpnProfile?.let { VpnConfig.available(it) }.orEmpty()
-            return if (vpnProtoChoice in avail || avail.isEmpty()) vpnProtoChoice else avail.first()
-        }
-
-    fun selectVpnProto(v: VpnProtocol) {
-        vpnProtoChoice = v
-        vpnError = null
-        prefs.edit().putString("vpnProto", v.name).apply()
-    }
-
-    /** Подключение к серверу вкладки VPN выбранным протоколом (разрешение VPN уже получено). */
-    fun vpnConnect() {
-        vpnError = null
-        val p = vpnProfile ?: run { vpnError = "Сначала добавьте сервер на Главной."; return }
-        val proto = vpnProto
-        if (proto !in VpnConfig.available(p)) { vpnError = "На сервере ${p.fqdn} нет ни одного протокола для встроенного клиента."; return }
-        val bypass = vpnBypassRu
-        scope.launch {
-            val ip = resolveIpv4(p.fqdn) ?: p.vps?.ip
-            if (ip == null) { vpnError = "Не удалось узнать IP-адрес ${p.fqdn}. Проверьте интернет."; return@launch }
-            val config = try {
-                VpnConfig.forProtocol(proto, p, null, ip, VpnConfig.Options(bypassRu = bypass))
-            } catch (e: IllegalArgumentException) {
-                vpnError = e.message; return@launch
-            }
-            try {
-                platform.vpnStart(config, p.fqdn, proto.title)
-            } catch (e: Exception) {
-                vpnError = "Android не дал запустить VPN: ${e.message}"
-            }
-        }
-    }
-
-    fun vpnDisconnect() = platform.vpnStop()
-
     // ---------- Работа в фоне и контроль ----------
     /** Текст уведомления о ходе работы: текущий шаг создания или переезда сервера, иначе последняя строка журнала. */
     val jobText: String
@@ -2532,9 +2669,8 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     /** Фоновый контроль серверов: раз в столько часов (0 — выключен). */
     var monitorHours by mutableStateOf(prefs.getInt("monitorHours", 0))
         private set
-    /** Фоновый контроль и встроенный VPN есть только в версии для Android. */
+    /** Фоновый контроль есть только в версии для Android. */
     val monitorSupported: Boolean get() = platform.monitorSupported
-    val vpnSupported: Boolean get() = platform.vpnSupported
 
     fun setMonitor(hours: Int) {
         monitorHours = hours
@@ -2688,10 +2824,10 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
      * Протоколы и ссылки не меняются. Заодно доделывает прерванную установку пакетов (dpkg --configure -a).
      */
     fun secureNow() {
-        val ssh = buildSshConfig() ?: return
+        val ssh = buildSshConfig(allowHw = false) ?: return
         if (privateKey.isBlank()) {
             return fail("Для защиты нужен приватный SSH-ключ, который добавлен на сервер (например, ключ из кабинета OneProvider): " +
-                "выберите «SSH-ключ» в «Доступе по SSH» и вставьте его.")
+                "выберите «SSH-ключ» в «Доступе к серверам» и вставьте его.")
         }
         if (SshKeys.publicOf(privateKey, passphrase) == null) return fail("Приватный ключ не читается или неверен пароль от ключа.")
         persist()
@@ -2783,16 +2919,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         plusSteps[PlusStep.OLD_VPS] = StepStatus.SKIPPED
     }
 
-    /** Сбрасывает профиль: при следующем запуске будут новые ссылки. */
-    fun plusReset() {
-        plusConfirmReset = false
-        val p = plusProfile ?: return
-        removeStable(p.fqdn)
-        plusLinks.clear(); plusSteps.clear(); plusLog.clear()
-        plusLog.add("Сервер ${p.fqdn} убран с Главной. VPS и DNS не изменялись; его ссылки можно вернуть только из сохранённой копии.")
-    }
-
-    /** Настройки доступа для копии: вкладка «Сервер», сохранённые серверы, имя, ключи OneProvider и name.com. */
+    /** Настройки доступа для копии: «Доступ к серверам», сохранённые серверы, имя, ключи OneProvider и name.com. */
     private fun currentSettings(): BackupSettings = BackupSettings(
         host = host.trim(), sshPort = sshPort.trim(), user = user.trim(), useKey = useKey,
         password = password, privateKey = privateKey, passphrase = passphrase,
@@ -2801,6 +2928,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         servers = profiles.map {
             SavedServer(it, secrets.get(secretKey(it, "password")), secrets.get(secretKey(it, "privateKey")), secrets.get(secretKey(it, "passphrase")))
         },
+        hwKey = if (hwKeys.isEmpty()) "" else app.hy2setup.hwkey.HwKey.listToJson(hwKeys),
     )
 
     private fun backupData() = BackupData(stableProfiles.toList(), currentSettings())
@@ -2810,7 +2938,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     private var fpCache: Pair<StableProfile, String>? = null
 
     /**
-     * Ключи или люди выбранного сервера менялись после последней копии с ним. Настройки вкладки «Сервер»
+     * Ключи или люди выбранного сервера менялись после последней копии с ним. Настройки «Доступа к серверам»
      * сюда не входят — иначе плашка загоралась бы после каждого перезапуска.
      */
     val backupStale: Boolean
@@ -2847,7 +2975,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             }
             markBackedUp(data.servers)
             addLog(plusLog, "Копия сохранена: серверов ${data.servers.size}" + (if (data.servers.isNotEmpty()) " (${data.servers.joinToString { it.fqdn }})" else "") +
-                ", настройки вкладки «Сервер» и ключи OneProvider и name.com. " +
+                ", настройки «Доступа к серверам» и ключи OneProvider и name.com. " +
                 if (pass.isEmpty()) "Файл НЕ зашифрован — храните его надёжно и никому не пересылайте." else "Файл зашифрован паролем — без пароля его не открыть.")
         }
     }
@@ -2913,7 +3041,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         data.settings?.let { s ->
             if (settingsEmpty()) {
                 applySettings(s)
-                addLog(plusLog, "Из копии восстановлены настройки вкладки «Сервер» и ключи OneProvider и name.com.")
+                addLog(plusLog, "Из копии восстановлены настройки «Доступа к серверам» и ключи OneProvider и name.com.")
             } else if (s != currentSettings()) {
                 pendingSettings = s
             }
@@ -2934,6 +3062,11 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         email = s.email
         if (s.masquerade.isNotEmpty()) masquerade = s.masquerade
         ncUser = s.ncUser; ncToken = s.ncToken; opApiKey = s.opApiKey; opClientKey = s.opClientKey
+        app.hy2setup.hwkey.HwKey.listFromJson(s.hwKey).filter { k -> hwKeys.none { it.fingerprint == k.fingerprint } }.takeIf { it.isNotEmpty() }?.let { add ->
+            hwKeys.addAll(add)
+            if (hwSelected.isEmpty()) hwSelected = add.first().fingerprint
+            saveHwKeys()   // вход по ним на этом устройстве ещё не проверяли
+        }
         for (srv in s.servers) {
             val updated = ServerProfiles.upsert(profiles, srv.profile)
             profiles.clear(); profiles.addAll(updated)
@@ -2950,7 +3083,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         pendingSettings = null
         if (apply) {
             applySettings(s)
-            addLog(plusLog, "Настройки вкладки «Сервер» и ключи OneProvider и name.com заменены данными из копии.")
+            addLog(plusLog, "Настройки «Доступа к серверам» и ключи OneProvider и name.com заменены данными из копии.")
         }
     }
 
@@ -2976,12 +3109,12 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     private fun tgSsh(): SshConfig? {
         securityProblem()?.let { tgError = it; return null }
-        val ssh = buildSshConfig() ?: run { tgError = errorMessage ?: "Проверьте данные сервера на вкладке «Сервер»."; return null }
+        val ssh = buildSshConfig() ?: run { tgError = errorMessage ?: "Проверьте данные сервера в «Доступе к серверам» (Инструменты)."; return null }
         persist()
         return ssh
     }
 
-    /** Telegram-прокси в общей установке вкладки «Сервер». */
+    /** Telegram-прокси в общей установке «Доступа к серверам». */
     private fun planTg(): ProtoJob? {
         val port = tgPort.trim().toIntOrNull()
         if (port == null || port !in 1..65535) return null.also { fail("Порт Telegram-прокси должен быть числом 1–65535.") }
@@ -3003,21 +3136,6 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    fun tgFetchLink() {
-        tgError = null
-        val ssh = tgSsh() ?: return
-        launchTask(tgLog) {
-            tgLinks.clear()
-            addLog(tgLog, "Подключаюсь к ${ssh.host}:${ssh.port} и читаю настройки…")
-            val markers = java.util.Collections.synchronizedList(mutableListOf<String>())
-            runner.runScript(ssh, Scripts.exportTelegram()) { line ->
-                if (Links.isMarker(line)) markers += line else postLog(tgLog, line)
-            }
-            rememberProfile(ssh)
-            Links.telegramFromMarkers(markers.toList(), ssh.host)?.let { tgLinks.add(it) }
-        }
-    }
-
     private fun tgSimple(script: String) {
         tgError = null
         val ssh = tgSsh() ?: return
@@ -3029,19 +3147,14 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
-    fun tgStatus() = tgSimple(Scripts.statusTelegram())
-    fun tgRestart() = tgSimple(Scripts.restartTelegram())
-    fun tgRemove() {
-        tgLinks.clear()
-        tgSimple(Scripts.removeTelegram())
-    }
-
     /** Удаляет сохранённые пароли, SSH-ключ и токен с телефона. */
     fun forgetSecrets() {
         // постоянный профиль «Комбайна+» не трогаем: иначе изменятся ссылки у всех клиентов
         val profiles = secrets.get(STABLE_PROFILES)
         secrets.clear()
         if (profiles.isNotEmpty()) secrets.put(STABLE_PROFILES, profiles)
+        hwKeys.clear(); hwSelected = ""; hwVerifiedSet = emptySet(); hwLogin = false
+        saveHwKeys()
         password = ""
         privateKey = ""
         passphrase = ""
@@ -3132,7 +3245,12 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         return DnsPlan(u, ncToken.trim(), z, sub, ttlNum)
     }
 
-    private fun buildSshConfig(): SshConfig? {
+    private fun buildSshConfig(allowHw: Boolean = true): SshConfig? {
+        if (allowHw && hwLogin) hwKey?.let { k -> return buildSshConfig(allowHw = false, needSecret = false)?.copy(privateKey = "", hwKey = k) }
+        return buildSshConfig(allowHw = false, needSecret = true)
+    }
+
+    private fun buildSshConfig(allowHw: Boolean, needSecret: Boolean): SshConfig? {
         val h = host.trim()
         if (h.isEmpty() || !Regex("^[A-Za-z0-9.:\\-\\[\\]]+$").matches(h)) {
             fail("Укажите IP-адрес или домен сервера.")
@@ -3148,11 +3266,11 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             fail("Укажите имя пользователя.")
             return null
         }
-        if (useKey && privateKey.isBlank()) {
+        if (needSecret && useKey && privateKey.isBlank()) {
             fail("Вставьте приватный ключ или выберите файл.")
             return null
         }
-        if (!useKey && password.isEmpty()) {
+        if (needSecret && !useKey && password.isEmpty()) {
             fail("Введите пароль.")
             return null
         }

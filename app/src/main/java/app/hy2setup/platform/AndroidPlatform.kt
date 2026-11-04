@@ -5,7 +5,6 @@ import android.content.SharedPreferences
 import android.net.Uri
 import app.hy2setup.MonitorWorker
 import app.hy2setup.SecretStore
-import app.hy2setup.vpn.VpnTunnelService
 import java.io.File
 
 /** Android: SharedPreferences, Android Keystore, WorkManager и VpnService. */
@@ -19,9 +18,12 @@ class AndroidPlatform(private val app: Application) : Platform {
     override fun monitorLastState(fqdn: String) = MonitorWorker.lastState(app, fqdn)
     override fun vpnActive() = MonitorWorker.vpnActive(app)
 
-    override val vpnSupported get() = true
-    override fun vpnStart(config: String, server: String, protocol: String) = VpnTunnelService.start(app, config, server, protocol)
-    override fun vpnStop() = VpnTunnelService.stop(app)
+    private val hw = HwKeyAndroid(app)
+    override val hwKeySupported get() = true
+    override fun hwKeyOpen(timeoutMs: Long) = hw.open(timeoutMs)
+    override fun hwKeyClose() = hw.close()
+    override fun hwKeyCancel() = hw.cancel()
+
 }
 
 private class PrefsStore(private val p: SharedPreferences) : KeyValueStore {

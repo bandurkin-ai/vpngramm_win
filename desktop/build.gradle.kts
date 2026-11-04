@@ -10,15 +10,15 @@ plugins {
  * плюс своя реализация платформенного слоя (desktop/src/main/kotlin).
  */
 
-val appVersion = "3.6.1"
+val appVersion = "4.0"
 
-/** Файлы, которые есть только в Android-версии (службы, Android Keystore, VpnService и т. п.). */
+/** Файлы, которые есть только в Android-версии (службы, Android Keystore, USB и NFC и т. п.). */
 val androidOnly = listOf(
     "app/hy2setup/MainActivity.kt", "app/hy2setup/App.kt", "app/hy2setup/JobService.kt", "app/hy2setup/MonitorWorker.kt",
     "app/hy2setup/Notifications.kt", "app/hy2setup/SecretStore.kt",
-    "app/hy2setup/vpn/VpnTunnelService.kt", "app/hy2setup/vpn/VpnTileService.kt",
-    "app/hy2setup/ui/VpnPanel.kt", "app/hy2setup/ui/VpnScreen.kt", "app/hy2setup/ui/PlatformUiAndroid.kt",
+    "app/hy2setup/ui/PlatformUiAndroid.kt",
     "app/hy2setup/platform/AndroidPlatform.kt", "app/hy2setup/platform/BaseViewModelAndroid.kt", "app/hy2setup/platform/DeviceAndroid.kt",
+    "app/hy2setup/platform/HwKeyAndroid.kt",
 )
 
 java {

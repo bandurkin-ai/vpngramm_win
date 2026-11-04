@@ -56,6 +56,15 @@ class BackupTest {
     }
 
     @Test
+    fun hwKeyTravelsInBackup() {
+        val key = app.hy2setup.hwkey.U2f.register(app.hy2setup.hwkey.FakeU2fToken())
+        val s = BackupSettings(host = "203.0.113.1", hwKey = key.toJson())
+        assertEquals(key, app.hy2setup.hwkey.HwKey.fromJson(BackupSettings.fromJson(s.toJson()).hwKey))
+        // без ключа Рутокена копия выглядит как раньше (отпечатки старых копий не меняются)
+        assertEquals(false, BackupSettings(host = "x").toJson().has("hwKey"))
+    }
+
+    @Test
     fun serverFingerprintIgnoresMovesAndChecks() {
         val p = StableProfile.create("example.org", "vpn1", "", "https://www.bing.com/")
         val fp = Backup.serverFingerprint(p)

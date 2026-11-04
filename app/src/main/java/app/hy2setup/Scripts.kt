@@ -1081,6 +1081,31 @@ ${firewall()}
     fun ping(): String = HEADER + "\n" + "echo \"$PING_MARKER\""
 
     /**
+     * Добавляет открытый ключ (строку authorized_keys) пользователю, под которым вошли. Для ключей аппаратных токенов
+     * (sk-ecdsa) сначала проверяет, что OpenSSH на сервере 8.2 или новее — старые такие ключи не понимают.
+     */
+    fun addAuthorizedKey(line: String): String {
+        val safe = line.replace("'", "")
+        val blob = safe.split(" ").getOrElse(1) { "" }
+        return HEADER + "\n" + """
+            V=${'$'}( { /usr/sbin/sshd -V 2>&1; ssh -V 2>&1; } | grep -o 'OpenSSH_[0-9]*\.[0-9]*' | head -1 | sed 's/OpenSSH_//')
+            MAJ=${'$'}{V%%.*}; MIN=${'$'}{V#*.}
+            if [ -n "${'$'}V" ] && { [ "${'$'}MAJ" -lt 8 ] || { [ "${'$'}MAJ" -eq 8 ] && [ "${'$'}MIN" -lt 2 ]; }; }; then
+                echo "ОШИБКА: на сервере OpenSSH ${'$'}V, а ключи Рутокена (sk-ecdsa) понимает OpenSSH 8.2 и новее — обновите систему сервера"; exit 1
+            fi
+            H=${'$'}(getent passwd "${'$'}(id -un)" | cut -d: -f6); H=${'$'}{H:-${'$'}HOME}
+            mkdir -p "${'$'}H/.ssh" && chmod 700 "${'$'}H/.ssh"
+            touch "${'$'}H/.ssh/authorized_keys" && chmod 600 "${'$'}H/.ssh/authorized_keys"
+            if grep -qF '$blob' "${'$'}H/.ssh/authorized_keys"; then
+                echo "Ключ Рутокена уже есть на сервере (OpenSSH ${'$'}V)."
+            else
+                echo '$safe' >> "${'$'}H/.ssh/authorized_keys"
+                echo "✓ Ключ Рутокена добавлен в authorized_keys (OpenSSH ${'$'}V)."
+            fi
+        """.trimIndent()
+    }
+
+    /**
      * Отключает вход по паролю в SSH (оставляет вход по ключу, root — только по ключу).
      * Проверяет конфигурацию через sshd -t и откатывает изменения при ошибке.
      */

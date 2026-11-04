@@ -126,3 +126,12 @@ private fun ProtocolRow(vm: MainViewModel, m: ServerMode, now: Boolean, want: Bo
 }
 
 private fun names(set: Set<ServerMode>) = ServerMode.entries.filter { it in set }.joinToString { PROTOCOL_NAMES.getValue(it) }
+
+/** Полные названия протоколов сервера. */
+internal val PROTOCOL_NAMES = mapOf(
+    ServerMode.HY2 to "Hysteria2 + Salamander",
+    ServerMode.VLESS to "VLESS + Reality",
+    ServerMode.XHTTP to "VLESS + Reality + XHTTP",
+    ServerMode.AWG to "AmneziaWG 3.1",
+    ServerMode.TG to "Telegram-прокси",
+)

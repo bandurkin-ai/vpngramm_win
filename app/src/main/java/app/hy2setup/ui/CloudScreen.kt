@@ -45,7 +45,7 @@ import app.hy2setup.OpVm
 @Composable
 fun CloudScreen(vm: MainViewModel) {
     ScreenFrame(
-        title = "Облако",
+        title = "VPS/DNS",
         running = vm.running,
         actions = {
             IconButton(onClick = { if (vm.cloudDns) vm.loadDns() else vm.opLoadVms() }, enabled = !vm.running) {
@@ -131,12 +131,12 @@ private fun VpsPart(vm: MainViewModel) {
         Text("Добавить ключ", style = MaterialTheme.typography.titleSmall)
         AppField("Название", vm.opNewKeyName, { vm.opNewKeyName = it }, enabled = !vm.running)
         AppField("Публичный ключ (ssh-ed25519 AAAA…)", vm.opNewKeyValue, { vm.opNewKeyValue = it }, enabled = !vm.running, lines = 3, mono = true)
-        TextButton(onClick = vm::opKeyFromServerTab, enabled = !vm.running) { Text("Взять из приватного ключа раздела «Сервер»") }
+        TextButton(onClick = vm::opKeyFromServerTab, enabled = !vm.running) { Text("Взять из приватного ключа «Доступа к серверам»") }
         FilledTonalButton(onClick = vm::opAddKey, enabled = !vm.running, modifier = Modifier.fillMaxWidth()) { Text("Добавить ключ в кабинет") }
         MoreHint(
             "Сюда вставляется только публичная часть (.pub).",
             "Новый ключ сразу отмечается для создаваемых VPS. Чтобы приложение входило по нему, его приватная часть должна быть " +
-                "в «Доступе по SSH» раздела «Сервер».",
+                "в «Инструменты» → «Доступ к серверам».",
         )
     }
 
@@ -159,7 +159,7 @@ private fun VmRow(vm: MainViewModel, v: OpVm) {
         leadingContent = { Checkbox(v.id in vm.opSelected, { vm.opToggleVm(v.id) }, enabled = !vm.running) },
         trailingContent = {
             IconButton(onClick = { vm.useOnServerTab(v.ip) }, enabled = !vm.running && v.ip.isNotEmpty()) {
-                Icon(AppIcons.Chevron, "Открыть в разделе «Сервер»")
+                Icon(AppIcons.Chevron, "Подставить в «Доступ к серверам»")
             }
         },
         colors = ListItemDefaults.colors(containerColor = Color.Transparent),
@@ -192,8 +192,8 @@ private fun CreatedCard(vm: MainViewModel, c: OpCreated) {
                 Button(
                     onClick = { vm.useOnServerTab(c.ip, c.password, vm.opCreatedKeyed) },
                     enabled = c.ip.isNotEmpty() && !vm.running, modifier = Modifier.fillMaxWidth(),
-                ) { Text("Установить протокол на этот VPS") }
-                Hint("Откроется раздел «Сервер» с IP и паролем root. Подождите 1–3 минуты, пока VPS загрузится.", s.onSuccessContainer)
+                ) { Text("Подставить в «Доступ к серверам»") }
+                Hint("IP и пароль root подставятся в «Инструменты → Доступ к серверам». Подождите 1–3 минуты, пока VPS загрузится.", s.onSuccessContainer)
         }
     }
 }

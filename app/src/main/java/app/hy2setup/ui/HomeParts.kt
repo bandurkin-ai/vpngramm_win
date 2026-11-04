@@ -48,6 +48,7 @@ import app.hy2setup.ProfileUser
 import app.hy2setup.Protocol
 import app.hy2setup.ShareLink
 import app.hy2setup.StableProfile
+import app.hy2setup.Traffic
 import app.hy2setup.TgParams
 
 /** Протоколы профиля в порядке показа. */
@@ -121,17 +122,23 @@ internal fun TrafficBlock(vm: MainViewModel, p: StableProfile) {
     val onHero = MaterialTheme.colorScheme.onPrimaryContainer
     Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
         if (used != null) {
-            val text = if (limit != null) "Трафик за месяц: ${"%.1f".format(used)} из ${limit.toInt()} ГБ (${(used / limit * 100).toInt()}%)"
-            else "Трафик за месяц: ${"%.1f".format(used)} ГБ"
-            Text(text, style = MaterialTheme.typography.bodyMedium, color = onHero)
+            Text(Traffic.usage(used, limit, p.checkAt), style = MaterialTheme.typography.bodyMedium, color = onHero)
             if (limit != null) {
                 val frac = (used / limit).toFloat().coerceIn(0f, 1f)
                 LinearProgressIndicator(
                     progress = { frac }, modifier = Modifier.fillMaxWidth(),
                     color = if (frac > 0.8f) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.primary,
                 )
-                if (frac > 0.8f) Text("Скоро лимит — за перерасход OneProvider берёт доплату.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
             }
+            val (level, state) = Traffic.limitState(used, limit)
+            Text(
+                state, style = MaterialTheme.typography.bodySmall,
+                color = when (level) {
+                    Traffic.Level.OVER, Traffic.Level.WARN -> MaterialTheme.colorScheme.error
+                    Traffic.Level.OK -> LocalStatusColors.current.success
+                    Traffic.Level.UNKNOWN -> onHero.copy(alpha = 0.75f)
+                },
+            )
         }
         if (bal != null) Text("Баланс OneProvider: $bal", style = MaterialTheme.typography.bodyMedium, color = onHero)
     }

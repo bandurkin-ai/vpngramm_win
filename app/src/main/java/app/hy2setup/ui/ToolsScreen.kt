@@ -4,6 +4,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilledTonalButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.ListItem
 import androidx.compose.material3.ListItemDefaults
@@ -19,13 +20,24 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import app.hy2setup.MainViewModel
 import app.hy2setup.platform.Device
 
-/** Инструменты: контроль серверов и служебные действия. Новый сервер создаётся на Главной. */
+/** Инструменты: доступ к серверам (SSH и аппаратные ключи), контроль серверов, служебные действия. Новый сервер создаётся на Главной. */
 @Composable
 fun ToolsScreen(vm: MainViewModel) {
     var ask by remember { mutableStateOf<String?>(null) }
     val version = rememberAppVersion()
 
     ScreenFrame(title = "Инструменты", running = vm.running) {
+        Text("Доступ к серверам", style = MaterialTheme.typography.titleMedium)
+        SshAccessCard(vm)
+        if (vm.hwKeySupported) HwKeysCard(vm)
+        SectionCard("Защитить сервер", AppIcons.Shield, startExpanded = false, subtitle = "Обновления и вход только по SSH-ключу") {
+            Hint("Для сервера из «Доступа по SSH»: обновления, автообновления и вход только по SSH-ключу. Протоколы и ссылки не меняются.")
+            FilledTonalButton(onClick = { ask = "secure" }, enabled = !vm.running && vm.host.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
+                Text("Защитить сервер ${vm.host.trim()}".trim())
+            }
+        }
+        if (vm.log.isNotEmpty() || vm.running) ResultPanel(vm.log, vm.running, emptyList(), title = "Журнал")
+        Text("Сервис", style = MaterialTheme.typography.titleMedium)
         if (vm.monitorSupported) SectionCard(
             "Контроль серверов", AppIcons.Shield,
             subtitle = if (vm.monitorHours == 0) "Выключен" else "Проверка раз в ${vm.monitorHours} ч",
@@ -50,6 +62,12 @@ fun ToolsScreen(vm: MainViewModel) {
     }
 
     when (ask) {
+        "secure" -> ConfirmDialog(
+            "Защитить сервер ${vm.host.trim()}?",
+            "На сервере обновятся пакеты и включатся автообновления, вход по паролю будет отключён — только после того, как вход по SSH-ключу проверен. " +
+                "Нужен приватный SSH-ключ, уже добавленный на сервер.",
+            "Защитить", onConfirm = { ask = null; vm.secureNow() }, onDismiss = { ask = null },
+        )
         "secrets" -> ConfirmDialog(
             "Забыть пароли и токены?",
             "С ${Device.GEN} будут удалены сохранённые пароли, приватный ключ SSH, ключи OneProvider и токен name.com. " +

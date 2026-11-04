@@ -35,6 +35,8 @@ data class OpLocation(
     val hasIpv4: Boolean = true,
     /** Сама локация открыта для заказа (нет признаков «нет мест», «отключена» и т.п.). */
     val available: Boolean = true,
+    /** Тестовый адрес локации для замера пинга (если API его отдаёт), иначе пусто. */
+    val testHost: String = "",
 ) {
     val title: String get() = listOf(city, country).filter { it.isNotEmpty() }.joinToString(", ") + if (region.isNotEmpty()) " ($region)" else ""
 
@@ -310,6 +312,7 @@ class OneProviderClient(
                     sizeIds = sizeIdsOf(it.opt("available_sizes")),
                     hasIpv4 = it.optJSONObject("available_ips")?.optString("ipv4", "1")?.let { v -> v != "0" } ?: true,
                     available = locationAvailable(it),
+                    testHost = testHostOf(it),
                 )
             }.sortedWith(compareBy({ it.region }, { it.city }))
         }
@@ -394,6 +397,17 @@ class OneProviderClient(
                 else keys.filter { truthy(any.opt(it)) }.toSet()
             }
             else -> emptySet()
+        }
+
+        /** Тестовый адрес локации из полей вида test_ip / looking_glass (адрес или ссылка); пусто — нет. */
+        fun testHostOf(o: JSONObject): String {
+            val keys = listOf("test_ip", "testip", "test_ipv4", "test_host", "ping_ip", "lg", "looking_glass", "lookingglass", "speedtest")
+            for (k in keys) {
+                val v = o.optString(k).trim().takeIf { it.isNotEmpty() && it != "null" } ?: continue
+                val host = if ("://" in v) runCatching { java.net.URI(v).host }.getOrNull().orEmpty() else v.substringBefore('/').substringBefore(':')
+                if (Regex("^[A-Za-z0-9.-]+$").matches(host) && '.' in host) return host
+            }
+            return ""
         }
 
         /** Признаки доступности самой локации, если API их отдаёт. Неизвестные значения не считаем отказом. */

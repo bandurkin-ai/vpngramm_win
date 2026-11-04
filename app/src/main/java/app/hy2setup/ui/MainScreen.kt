@@ -47,8 +47,6 @@ import androidx.compose.ui.unit.sp
 import app.hy2setup.MainViewModel
 import app.hy2setup.TAB_CLOUD
 import app.hy2setup.TAB_HOME
-import app.hy2setup.TAB_SERVER
-import app.hy2setup.TAB_VPN
 import kotlinx.coroutines.launch
 import app.hy2setup.platform.Device
 
@@ -56,13 +54,11 @@ private data class Dest(val title: String, val icon: ImageVector)
 
 private val DESTS = listOf(
     Dest("Главная", AppIcons.Home),
-    Dest("VPN", AppIcons.Shield),
-    Dest("Сервер", AppIcons.Dns),
-    Dest("Облако", AppIcons.Cloud),
+    Dest("VPS/DNS", AppIcons.Cloud),
     Dest("Инструменты", AppIcons.Build),
 )
 
-/** Корень интерфейса: нижняя навигация на 5 разделов (без VPN там, где нет встроенного клиента), snackbar и диалог «доверять серверу?». */
+/** Корень интерфейса: нижняя навигация (Главная, VPS/DNS, Инструменты), snackbar и диалог «доверять серверу?». */
 @Composable
 fun AppRoot(vm: MainViewModel) {
     val snackbar = remember { SnackbarHostState() }
@@ -75,7 +71,6 @@ fun AppRoot(vm: MainViewModel) {
             bottomBar = {
                 NavigationBar {
                     DESTS.forEachIndexed { i, d ->
-                        if (i == TAB_VPN && !vm.vpnSupported) return@forEachIndexed
                         NavigationBarItem(
                             selected = vm.selectedTab == i,
                             onClick = { vm.selectedTab = i },
@@ -90,8 +85,6 @@ fun AppRoot(vm: MainViewModel) {
                 AnimatedContent(vm.selectedTab, transitionSpec = { fadeIn() togetherWith fadeOut() }, label = "screen") { tab ->
                     when (tab) {
                         TAB_HOME -> HomeScreen(vm)
-                        TAB_VPN -> VpnScreen(vm)
-                        TAB_SERVER -> ServerScreen(vm)
                         TAB_CLOUD -> CloudScreen(vm)
                         else -> ToolsScreen(vm)
                     }
@@ -99,6 +92,7 @@ fun AppRoot(vm: MainViewModel) {
             }
         }
         HostKeyDialog(vm)
+        HwKeyDialog(vm)
     CrashDialog(vm)
     }
 }

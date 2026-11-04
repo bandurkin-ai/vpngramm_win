@@ -53,8 +53,14 @@ interface Platform {
     /** Включён ли на устройстве какой-нибудь VPN. */
     fun vpnActive(): Boolean
 
-    /** Встроенный VPN-клиент (есть только на Android). */
-    val vpnSupported: Boolean
-    fun vpnStart(config: String, server: String, protocol: String)
-    fun vpnStop()
+    /** Аппаратный ключ для входа по SSH (Рутокен MFA и другие U2F/FIDO2) — по USB-C или NFC; есть только на Android. */
+    val hwKeySupported: Boolean
+    /**
+     * Ждёт, пока токен вставят в USB или приложат к NFC, и возвращает канал к нему. Блокирует поток до [timeoutMs];
+     * при отмене ([hwKeyCancel]) или тайм-ауте бросает HwKeyException.
+     */
+    fun hwKeyOpen(timeoutMs: Long): app.hy2setup.hwkey.HwTransport
+    /** Закончили работу с токеном: выключить ожидание NFC и закрыть USB. */
+    fun hwKeyClose()
+    fun hwKeyCancel()
 }

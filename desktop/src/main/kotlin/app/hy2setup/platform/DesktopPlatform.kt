@@ -36,10 +36,12 @@ class DesktopPlatform(override val dataDir: File = defaultDataDir()) : Platform 
         }
     }.getOrDefault(false)
 
-    override val vpnSupported get() = false
-    override fun vpnStart(config: String, server: String, protocol: String) =
-        throw UnsupportedOperationException("Встроенный VPN есть только в версии для Android.")
-    override fun vpnStop() {}
+    override val hwKeySupported get() = false
+    override fun hwKeyOpen(timeoutMs: Long): app.hy2setup.hwkey.HwTransport =
+        throw app.hy2setup.hwkey.HwKeyException("Вход по Рутокену есть только в версии для Android.")
+    override fun hwKeyClose() {}
+    override fun hwKeyCancel() {}
+
 
     companion object {
         private val VPN_NAMES = listOf("wintun", "tun", "tap-", "tap ", "wireguard", "vpn", "happ", "v2ray", "sing-box", "amnezia")

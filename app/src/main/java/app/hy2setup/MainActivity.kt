@@ -53,8 +53,14 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
+    override fun onPause() {
+        super.onPause()
+        if (app.hy2setup.platform.NfcHost.activity === this) app.hy2setup.platform.NfcHost.activity = null
+    }
+
     override fun onResume() {
         super.onResume()
+        app.hy2setup.platform.NfcHost.activity = this
         vm.refreshMonitor()
     }
 

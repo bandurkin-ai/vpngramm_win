@@ -65,7 +65,7 @@ class Hardener(private val runner: SshRunner, private val log: (String) -> Unit)
             Login.OK -> log("✓ Вход по ключу работает.")
             Login.REJECTED -> throw IllegalStateException(
                 "Сервер не принял SSH-ключ — сервер не изменялся, вход по паролю остался. Проверьте, что ключ " +
-                    "на вкладке «Сервер» — это приватная часть ключа, добавленного на сервер (в кабинете OneProvider).",
+                    "в «Доступе к серверам» (Инструменты) — это приватная часть ключа, добавленного на сервер (в кабинете OneProvider).",
             )
             Login.UNREACHABLE -> throw IllegalStateException("Сервер недоступен по SSH — защита не выполнялась.")
         }

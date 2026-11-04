@@ -252,14 +252,14 @@ private fun AddServerSheet(vm: MainViewModel, onDismiss: () -> Unit) {
 internal fun AddServerForm(vm: MainViewModel, onDone: () -> Unit) {
     Text("Добавить работающий сервер", style = MaterialTheme.typography.titleLarge)
     Hint(
-        "Например, сервер, поставленный вкладкой «Сервер». Приложение по SSH прочитает его пароли и ключи (сервер не изменяется) — " +
+        "Например, сервер, поставленный вручную или прежней версией приложения. Приложение по SSH прочитает его пароли и ключи (сервер не изменяется) — " +
             "и его можно будет переносить на другой VPS с теми же ссылками.",
     )
     AppField("Домен сервера (например, vpn2.example.org)", vm.importFqdn, { vm.importFqdn = it }, keyboard = KeyboardType.Uri, enabled = !vm.running)
     AppField("IP-адрес (если пусто — по домену)", vm.importHost, { vm.importHost = it }, keyboard = KeyboardType.Uri, enabled = !vm.running)
     Hint(
         "Вход: сохранённый пароль root этого сервера или приватный ключ из «Сервер → Доступ по SSH». " +
-            "Если сервер ещё не открывали в приложении, впишите его адрес и пароль на вкладке «Сервер».",
+            "Если сервер ещё не открывали в приложении, впишите его адрес и пароль в «Доступе к серверам» (Инструменты).",
     )
     ErrorText(vm.importError)
     Button(onClick = { vm.importServer(onDone) }, enabled = !vm.running, modifier = Modifier.fillMaxWidth().height(56.dp)) {
@@ -491,7 +491,7 @@ internal fun CombineServerList(vm: MainViewModel, profile: StableProfile) {
     forget?.let { srv ->
         ConfirmDialog(
             "Убрать из списка?",
-            "${srv.title} (${srv.ip}) пропадёт из этого списка. Сам VPS и его протоколы не изменятся — удалить VPS можно во вкладке «Облако».",
+            "${srv.title} (${srv.ip}) пропадёт из этого списка. Сам VPS и его протоколы не изменятся — удалить VPS можно во вкладке «VPS/DNS».",
             "Убрать", onConfirm = { forget = null; vm.forgetCombineServer(srv) }, onDismiss = { forget = null },
         )
     }
@@ -552,7 +552,7 @@ internal fun BackupSaveDialog(pass: String, onPass: (String) -> Unit, onSave: ()
 @Composable
 internal fun BackupSaveContent(pass: String, onPass: (String) -> Unit) {
     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-        Text("В копии: все серверы Главной с ключами ссылок, вкладка «Сервер» (адрес, пароль root, SSH-ключ), имя и ключи OneProvider и name.com.")
+        Text("В копии: все серверы Главной с ключами ссылок, «Доступ к серверам» (адрес, пароль root, SSH-ключ), имя и ключи OneProvider и name.com.")
         AppField("Пароль (необязательно)", pass, onPass, secret = true, keyboard = KeyboardType.Password)
         if (pass.isEmpty()) {
             Text(
@@ -667,7 +667,7 @@ private fun HomeDialogs(
     vm.pendingSettings?.let { st ->
         ConfirmDialog(
             "Заменить настройки доступа?",
-            "В копии есть настройки вкладки «Сервер»" + (if (st.host.isNotEmpty()) " (${st.user}@${st.host})" else "") +
+            "В копии есть настройки «Доступа к серверам»" + (if (st.host.isNotEmpty()) " (${st.user}@${st.host})" else "") +
                 ", SSH-ключ и ключи OneProvider и name.com. На ${Device.PREP} они уже заполнены и отличаются. Заменить их данными из копии?",
             "Заменить", onConfirm = { vm.confirmSettings(true) }, onDismiss = { vm.confirmSettings(false) }, dismiss = "Оставить текущие",
         )
