@@ -60,8 +60,29 @@ class DesktopPlatformTest {
         assertEquals("203.0.113.10", again.host)
         assertEquals("пароль-root", again.password)
         assertEquals("token-xyz", again.ncToken)
-        assertFalse(again.monitorSupported)
         assertFalse(again.hwKeySupported)
         assertFalse(File(dir, "secrets.properties").readText().contains("пароль-root"))
+    }
+
+    /** «Доступ по SSH → Применить» для сервера Главной переживает перезапуск; общий пароль не трогается. */
+    @Test
+    fun appliedServerAccessSurvivesRestart() {
+        val dir = tmp.newFolder()
+        val vm = MainViewModel(DesktopPlatform(dir))
+        vm.plusProfile = StableProfile.create("example.org", "vpn", "", "https://www.bing.com/").copy(vps = ProfileVps("123", "203.0.113.10", "vpn"))
+        vm.password = "общий-пароль"; vm.persist()
+        vm.accessSelect("vpn.example.org")
+        vm.host = "198.51.100.7"; vm.sshPort = "2200"; vm.user = "admin"; vm.password = "новый"
+        vm.accessApply()
+        val again = MainViewModel(DesktopPlatform(dir))
+        assertEquals("198.51.100.7", again.plusProfile!!.vps!!.ip)
+        val ssh = again.plusSsh()!!
+        assertEquals(listOf("198.51.100.7", "2200", "admin", "новый"), listOf(ssh.host, ssh.port.toString(), ssh.user, ssh.password))
+        assertEquals("vpn.example.org", again.accessTarget)
+        assertEquals("198.51.100.7", again.host)
+        assertFalse(again.accessDirty)
+        again.accessSelect("")
+        assertEquals("общий-пароль", again.password)
+        assertFalse(File(dir, "secrets.properties").readText().contains("новый"))
     }
 }

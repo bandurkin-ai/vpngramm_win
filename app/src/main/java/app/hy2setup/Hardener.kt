@@ -100,8 +100,47 @@ class Hardener(private val runner: SshRunner, private val log: (String) -> Unit)
             }
         }
 
+        firewallAndFail2ban(keyCfg)
+
         if (reboot.get()) rebootAndWait(keyCfg)
         return keyCfg
+    }
+
+    /**
+     * Файрвол (снаружи только SSH и порты VPN) и fail2ban. Ошибка здесь не отменяет уже сделанную защиту.
+     * Файрвол включается с таймером отката: подтверждаем его только после входа новым подключением.
+     */
+    private suspend fun firewallAndFail2ban(keyCfg: SshConfig) {
+        log("")
+        log("==> Файрвол и fail2ban")
+        try {
+            if (runner.runScript(keyCfg, Scripts.fail2banInstall()) { log(it) } != 0) {
+                log("ПРЕДУПРЕЖДЕНИЕ: fail2ban не включён — защита от перебора паролей не работает, остальное в силе.")
+            }
+        } catch (e: SshException) {
+            log("ПРЕДУПРЕЖДЕНИЕ: fail2ban не включён: ${e.message}")
+        }
+        val applied = try {
+            runner.runScript(keyCfg, Scripts.firewallApply()) { log(it) } == 0
+        } catch (e: SshException) {
+            log("ПРЕДУПРЕЖДЕНИЕ: файрвол не включён: ${e.message}")
+            return
+        }
+        if (!applied) {
+            log("ПРЕДУПРЕЖДЕНИЕ: файрвол не включён (правила не применились). Вход по ключу работает, VPN не затронут.")
+            return
+        }
+        when (login(keyCfg, attempts = 4)) {
+            Login.OK -> try {
+                runner.runScript(keyCfg, Scripts.firewallConfirm()) { log(it) }
+            } catch (e: SshException) {
+                log("ПРЕДУПРЕЖДЕНИЕ: не удалось подтвердить файрвол (${e.message}) — правила снимутся через 3 минуты; повторите «Защитить сервер».")
+            }
+            else -> log(
+                "ПРЕДУПРЕЖДЕНИЕ: после включения файрвола войти не удалось — через 3 минуты после включения правила снимутся сами, " +
+                    "и доступ вернётся. Проверьте порт SSH и повторите «Защитить сервер».",
+            )
+        }
     }
 
     /**

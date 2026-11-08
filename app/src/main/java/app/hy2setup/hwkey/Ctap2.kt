@@ -231,6 +231,40 @@ object Ctap2 {
         throw HwKeyException("Токен не умеет показывать резидентные ключи.")
     }
 
+    /**
+     * Все RP на токене, чьи id начинаются с «ssh:» (ssh-keygen -O application=ssh:имя даёт ssh:myname и т. п.).
+     * null — токен не умеет перечислять RP.
+     */
+    fun sshRpIds(t: HwTransport, pin: PinToken): List<String>? {
+        val begin = linkedMapOf<Int, Any?>(1 to 2, 3 to pin.protocol.version, 4 to pin.authenticate(byteArrayOf(2)))
+        for (cmd in listOf(CRED_MGMT, CRED_MGMT_PRE)) {
+            val first = try {
+                call(t, cmd, begin)
+            } catch (e: CtapError) {
+                when (e.code) {
+                    ERR_NO_CREDENTIALS -> return emptyList()
+                    ERR_INVALID_COMMAND -> continue
+                    else -> return null
+                }
+            }
+            val total = (first.at(5) as? Long)?.toInt() ?: 1
+            val ids = mutableListOf<String>()
+            var m = first
+            repeat(total) { i ->
+                if (i > 0) m = call(t, cmd, linkedMapOf(1 to 3))
+                ((m.at(3) as? Map<*, *>)?.get("id") as? String)?.let { ids += it }
+            }
+            return ids.filter { it.startsWith(SkKey.APPLICATION) }.distinct()
+        }
+        return null
+    }
+
+    /** Резидентные ключи всех «ssh:*» на токене; если перечислить RP нельзя — только «ssh:». */
+    fun sshResidentKeys(t: HwTransport, pin: PinToken): List<HwKey> {
+        val ids = (sshRpIds(t, pin) ?: listOf(SkKey.APPLICATION)).sortedBy { if (it == SkKey.APPLICATION) "" else it }
+        return ids.flatMap { residentKeys(t, pin, it) }
+    }
+
     private fun collect(t: HwTransport, cmd: Int, first: Map<*, *>, application: String): List<HwKey> {
         val total = (first.at(9) as? Long)?.toInt() ?: 1
         val out = mutableListOf<HwKey>()
@@ -286,6 +320,6 @@ object Hw {
     fun loadResident(t: HwTransport, askPin: () -> String?): List<HwKey> {
         val info = Ctap2.info(t)
         val pin = askPin() ?: throw HwKeyException("Загрузка отменена: PIN не введён.")
-        return Ctap2.residentKeys(t, Ctap2.pinToken(t, info, pin, Ctap2.PERM_CM, null))
+        return Ctap2.sshResidentKeys(t, Ctap2.pinToken(t, info, pin, Ctap2.PERM_CM, null))
     }
 }

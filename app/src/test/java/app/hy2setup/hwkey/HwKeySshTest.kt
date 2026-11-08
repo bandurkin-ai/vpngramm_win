@@ -1,5 +1,6 @@
 package app.hy2setup.hwkey
 
+import app.hy2setup.Scripts
 import app.hy2setup.SshConfig
 import app.hy2setup.SshException
 import app.hy2setup.SshRunner
@@ -91,5 +92,47 @@ class HwKeySshTest {
         token.userPresent = false
         val e = runCatching { login(token, key) }.exceptionOrNull()
         assertTrue("$e", e is SshException)
+    }
+
+    /** Ключ, созданный ssh-keygen с -O application=ssh:myname: загрузка находит его на токене, вход касанием работает. */
+    @Test
+    fun customApplicationResidentKey() {
+        assumeTrue("SSH_TEST_DIR не задан", dir != null)
+        val token = FakeFidoToken(pin = "2468")
+        val info = Ctap2.info(token)
+        fun mc(app: String) = Ctap2.makeCredential(token, info, Ctap2.EDDSA, true, Ctap2.pinToken(token, info, "2468", Ctap2.PERM_MC, app), app)
+        val named = mc("ssh:myname")
+        mc("example.com")   // ключ сайта (WebAuthn) — не для SSH
+        val loaded = Hw.loadResident(token) { "2468" }
+        assertEquals(listOf("ssh:myname"), loaded.map { it.application })
+        assertEquals(named.authorizedKeysLine(), loaded.single().authorizedKeysLine())
+        authorize(named)
+        assertTrue(loginFido(token, loaded.single()).contains("HWOK"))
+    }
+
+    /** «Ключи для всех серверов»: скрипт ставит ключи в ~/.ssh/authorized_keys один раз (стенд — пользователь root). */
+    @Test
+    fun defaultKeysInstalledOnce() = runBlocking {
+        assumeTrue("SSH_TEST_DIR не задан", dir != null)
+        val ak = File(System.getProperty("user.home"), ".ssh/authorized_keys")
+        val before = if (ak.exists()) ak.readText() else null
+        try {
+            val token = FakeFidoToken()
+            val fido = Hw.create(token, resident = false) { null }
+            val edPub = File(dir, "k_ed25519.pub").readText().trim().split(" ").take(2).joinToString(" ") + " list-key"
+            val cfg = SshConfig("127.0.0.1", 2222, "root", "", File(dir, "k_ed25519").readText(), "")
+            val runner = SshRunner(File.createTempFile("known", "hosts").apply { delete() }) { true }
+            val out = mutableListOf<String>()
+            val lines = listOf(fido.authorizedKeysLine("yk-test"), edPub)
+            assertEquals(0, runner.runScript(cfg, Scripts.addAuthorizedKeys(lines)) { out += it })
+            assertEquals(0, runner.runScript(cfg, Scripts.addAuthorizedKeys(lines)) { out += it })
+            val text = ak.readText()
+            assertEquals(1, text.lines().count { it == fido.authorizedKeysLine("yk-test") })
+            assertEquals(1, text.lines().count { it == edPub })
+            before?.let { assertTrue(text.startsWith(it.trimEnd())) }
+            assertTrue(out.any { "уже есть" in it })
+        } finally {
+            if (before == null) ak.delete() else ak.writeText(before)
+        }
     }
 }

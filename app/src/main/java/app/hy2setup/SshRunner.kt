@@ -38,6 +38,12 @@ class SshRunner(
     private val knownHostsFile: File,
     /** Канал к аппаратному токену (ждёт, пока его вставят или приложат); null — токены не поддерживаются. */
     private val hwTransport: (() -> app.hy2setup.hwkey.HwTransport)? = null,
+    /** Сколько ждать приветствия SSH при подключении. */
+    private val connectTimeoutMs: Int = 45_000,
+    /** Попыток подключения при временных сетевых ошибках (таймаут, сброс соединения). */
+    private val connectAttempts: Int = 3,
+    /** Паузы перед повторными попытками. */
+    private val retryDelaysMs: List<Long> = listOf(10_000, 20_000),
     /** Вызывается, когда сервер неизвестен. Возвращает true, если пользователь доверяет. */
     private val confirmHostKey: suspend (String) -> Boolean,
 ) {
@@ -76,7 +82,7 @@ class SshRunner(
     /** Возвращает код выхода скрипта. Каждая строка вывода уходит в [onLine]. */
     suspend fun runScript(cfg: SshConfig, script: String, onLine: (String) -> Unit): Int =
         withContext(Dispatchers.IO) {
-            val session = connect(cfg)
+            val session = connectWithRetry(cfg, onLine)
             try {
                 val remotePath = "/tmp/.hy2setup-${randomName()}.sh"
                 upload(session, packed(script), remotePath)
@@ -85,6 +91,56 @@ class SshRunner(
                 session.disconnect()
             }
         }
+
+    /**
+     * Подключение с повтором при временных сетевых ошибках — только до запуска скрипта, поэтому без побочных эффектов.
+     * Ошибки входа (пароль, ключ, ключ сервера) не повторяются.
+     */
+    private suspend fun connectWithRetry(cfg: SshConfig, onLine: (String) -> Unit): Session {
+        var attempt = 1
+        while (true) {
+            try {
+                return connect(cfg)
+            } catch (e: SshException) {
+                val kind = transientKind(e) ?: throw e
+                if (attempt >= connectAttempts) {
+                    val where = "${cfg.host}:${cfg.port}"
+                    throw SshException(
+                        if (kind == Transient.SILENT) {
+                            "Сервер $where принял соединение, но не ответил по SSH за ${connectTimeoutMs / 1000} с (попыток: $attempt). " +
+                                "Возможно, он перегружен или SSH ограничивает частые подключения (fail2ban). Подождите минуту и повторите; проверьте порт SSH."
+                        } else {
+                            "Не удаётся подключиться к $where (попыток: $attempt): ${e.cause?.message ?: e.message}. " +
+                                "Проверьте адрес и порт SSH и что сервер включён."
+                        },
+                        e.cause ?: e,
+                    )
+                }
+                val pause = retryDelaysMs.getOrElse(attempt - 1) { retryDelaysMs.lastOrNull() ?: 0L }
+                onLine("SSH не ответил вовремя (${e.cause?.message ?: e.message}). Повтор через ${(pause + 999) / 1000} с (попытка ${attempt + 1} из $connectAttempts)…")
+                kotlinx.coroutines.delay(pause)
+                attempt++
+            }
+        }
+    }
+
+    private enum class Transient { SILENT, NO_CONNECT }
+
+    /** Временная ли сетевая ошибка: SILENT — соединение есть, но SSH молчит; NO_CONNECT — не подключиться; null — не временная. */
+    private fun transientKind(e: Throwable): Transient? {
+        var t: Throwable? = e
+        while (t != null) {
+            val m = t.message.orEmpty()
+            when {
+                t is java.net.SocketTimeoutException && m.contains("connect", true) -> return Transient.NO_CONNECT
+                m.contains("connect timed out", true) || m.contains("Connection refused", true) -> return Transient.NO_CONNECT
+                t is java.net.SocketTimeoutException || m.contains("timed out", true) || m.contains("timeout: socket", true) -> return Transient.SILENT
+                m.contains("Connection reset", true) || m.contains("foreign host", true) || m.contains("connection is closed", true) -> return Transient.SILENT
+            }
+            t = t.cause
+        }
+        return null
+    }
 
     private fun connect(cfg: SshConfig): Session {
         if (!knownHostsFile.exists()) {
@@ -129,7 +185,7 @@ class SshRunner(
             override fun showMessage(message: String?) {}
         }
         try {
-            session.connect(20_000)
+            session.connect(connectTimeoutMs)
         } catch (e: Exception) {
             val msg = e.message.orEmpty()
             val authFail = msg.contains("Auth fail", true) || msg.contains("Auth cancel", true)

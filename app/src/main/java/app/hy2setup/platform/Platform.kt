@@ -44,12 +44,6 @@ interface Platform {
     /** Папка данных приложения (known_hosts и т. п.). */
     val dataDir: File
 
-    /** Фоновый контроль серверов (есть только на Android). */
-    val monitorSupported: Boolean
-    fun scheduleMonitor(hours: Int)
-    /** Последняя фоновая проверка сервера: время и успех. */
-    fun monitorLastState(fqdn: String): Pair<Long, Boolean>?
-
     /** Включён ли на устройстве какой-нибудь VPN. */
     fun vpnActive(): Boolean
 

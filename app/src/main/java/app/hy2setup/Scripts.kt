@@ -269,6 +269,7 @@ ${firewall()}
         else
             echo "Локальный файрвол не ограничивает входящие — менять ничего не нужно."
         fi
+        if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
     """.trimIndent().lines().joinToString("\n") { "        $it" }
 
     /**
@@ -398,6 +399,16 @@ ${firewall()}
         step "Время и файрвол"
         if [ "${'$'}(timedatectl show -p NTPSynchronized --value 2>/dev/null)" = "yes" ]; then ok "время синхронизировано"
         else info "время не синхронизировано по NTP: ${'$'}(date -u '+%F %T') UTC"; fi
+        if command -v nft >/dev/null 2>&1 && nft list table inet vpngramm >/dev/null 2>&1; then
+            VT=${'$'}(nft list table inet vpngramm)
+            info "файрвол vpngramm включён: снаружи открыты только SSH и порты VPN"
+            for P in ${'$'}FWP; do
+                echo "${'$'}VT" | grep "${'$'}{P#*/} dport" | grep -qE "[ {,]${'$'}{P%/*}[,} ]" && ok "файрвол vpngramm: ${'$'}P открыт" || bad "файрвол vpngramm: ${'$'}P закрыт — нажмите «Защитить сервер» ещё раз"
+            done
+        fi
+        if command -v fail2ban-client >/dev/null 2>&1 && fail2ban-client status sshd >/dev/null 2>&1; then
+            info "fail2ban: сейчас забанено адресов — ${'$'}(fail2ban-client status sshd | sed -n 's/.*Currently banned:[[:space:]]*//p'), всего банов — ${'$'}(fail2ban-client status sshd | sed -n 's/.*Total banned:[[:space:]]*//p')"
+        fi
         if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
             for P in ${'$'}FWP; do ufw status | grep -q "^${'$'}P " && ok "ufw: ${'$'}P открыт" || bad "ufw включён, но ${'$'}P не открыт"; done
         elif command -v iptables >/dev/null 2>&1 && iptables -S INPUT 2>/dev/null | grep -qE '^-P INPUT (DROP|REJECT)'; then
@@ -734,21 +745,24 @@ ${firewall()}
             bash <(curl -fsSL https://get.hy2.sh/) --remove || true
             rm -rf /etc/hysteria /etc/systemd/system/hysteria-server.service.d/hy2setup.conf
             systemctl daemon-reload 2>/dev/null || true
-            step "Готово. Правила файрвола (если открывали) нужно удалить вручную."
+            if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
+            step "Готово."
         """.trimIndent()
         Protocol.VLESS -> """
             step "Остановка и удаление Xray (VLESS)"
             systemctl disable --now xray.service >/dev/null 2>&1 || true
             TERM=xterm bash -c "${'$'}(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ remove --purge || true
             rm -rf /usr/local/etc/xray
-            step "Готово. Правила файрвола (если открывали) нужно удалить вручную."
+            if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
+            step "Готово."
         """.trimIndent()
         Protocol.AWG -> """
             step "Остановка и удаление AmneziaWG"
             systemctl disable --now awg-quick@awg0.service >/dev/null 2>&1 || true
             rm -f /etc/amnezia/amneziawg/awg0.conf $AWG_META
             echo "Конфигурация удалена (пакеты amneziawg остались — они ничего не делают без конфигурации)."
-            step "Готово. Правила файрвола (если открывали) нужно удалить вручную."
+            if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
+            step "Готово."
         """.trimIndent()
     }
 
@@ -1072,6 +1086,7 @@ ${firewall()}
                 exit 1
             fi
             echo "Служба работает, порт ${'$'}PORT/UDP."
+            if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
             echo "ВАЖНО: если у хостинга есть свой файрвол (Security Group), откройте там ${'$'}PORT/udp."
         """.trimIndent()
         return jobStart("awg", jobBody(body), "Установка AmneziaWG уже идёт")
@@ -1080,29 +1095,40 @@ ${firewall()}
     /** Проверка входа: печатает маркер. */
     fun ping(): String = HEADER + "\n" + "echo \"$PING_MARKER\""
 
+    /** Добавляет один открытый ключ (строку authorized_keys) — см. [addAuthorizedKeys]. */
+    fun addAuthorizedKey(line: String): String = addAuthorizedKeys(listOf(line))
+
     /**
-     * Добавляет открытый ключ (строку authorized_keys) пользователю, под которым вошли. Для ключей аппаратных токенов
-     * (sk-ecdsa) сначала проверяет, что OpenSSH на сервере 8.2 или новее — старые такие ключи не понимают.
+     * Добавляет открытые ключи (строки authorized_keys) пользователю, под которым вошли; уже добавленные не повторяются.
+     * Для ключей аппаратных токенов (sk-…) сначала проверяет, что OpenSSH на сервере 8.2 или новее — старые их не понимают.
      */
-    fun addAuthorizedKey(line: String): String {
-        val safe = line.replace("'", "")
-        val blob = safe.split(" ").getOrElse(1) { "" }
+    fun addAuthorizedKeys(lines: List<String>): String {
+        val keys = lines.mapNotNull { DefaultKeys.parse(it) }.distinctBy { it.blob }
+        val check = if (keys.none { it.hardware }) "" else """
+            if [ -n "${'$'}V" ] && { [ "${'$'}MAJ" -lt 8 ] || { [ "${'$'}MAJ" -eq 8 ] && [ "${'$'}MIN" -lt 2 ]; }; }; then
+                echo "ОШИБКА: на сервере OpenSSH ${'$'}V, а ключи аппаратных токенов (sk-…) понимает OpenSSH 8.2 и новее — обновите систему сервера"; exit 1
+            fi
+        """.trimIndent()
+        val add = keys.joinToString("\n") { k ->
+            val name = k.comment.ifEmpty { k.fingerprint }
+            """
+            if grep -qF '${k.blob}' "${'$'}AK"; then
+                echo "Ключ $name уже есть на сервере."
+            else
+                echo '${k.line}' >> "${'$'}AK"
+                echo "✓ Ключ $name добавлен в authorized_keys."
+            fi
+            """.trimIndent()
+        }
         return HEADER + "\n" + """
             V=${'$'}( { /usr/sbin/sshd -V 2>&1; ssh -V 2>&1; } | grep -o 'OpenSSH_[0-9]*\.[0-9]*' | head -1 | sed 's/OpenSSH_//')
             MAJ=${'$'}{V%%.*}; MIN=${'$'}{V#*.}
-            if [ -n "${'$'}V" ] && { [ "${'$'}MAJ" -lt 8 ] || { [ "${'$'}MAJ" -eq 8 ] && [ "${'$'}MIN" -lt 2 ]; }; }; then
-                echo "ОШИБКА: на сервере OpenSSH ${'$'}V, а ключи Рутокена (sk-ecdsa) понимает OpenSSH 8.2 и новее — обновите систему сервера"; exit 1
-            fi
+            """.trimIndent() + "\n" + check + "\n" + """
             H=${'$'}(getent passwd "${'$'}(id -un)" | cut -d: -f6); H=${'$'}{H:-${'$'}HOME}
+            AK="${'$'}H/.ssh/authorized_keys"
             mkdir -p "${'$'}H/.ssh" && chmod 700 "${'$'}H/.ssh"
-            touch "${'$'}H/.ssh/authorized_keys" && chmod 600 "${'$'}H/.ssh/authorized_keys"
-            if grep -qF '$blob' "${'$'}H/.ssh/authorized_keys"; then
-                echo "Ключ Рутокена уже есть на сервере (OpenSSH ${'$'}V)."
-            else
-                echo '$safe' >> "${'$'}H/.ssh/authorized_keys"
-                echo "✓ Ключ Рутокена добавлен в authorized_keys (OpenSSH ${'$'}V)."
-            fi
-        """.trimIndent()
+            touch "${'$'}AK" && chmod 600 "${'$'}AK"
+            """.trimIndent() + "\n" + add + "\n"
     }
 
     /**
@@ -1119,13 +1145,16 @@ ${firewall()}
         SETTINGS="PasswordAuthentication no
         ChallengeResponseAuthentication no
         PermitRootLogin prohibit-password
-        PubkeyAuthentication yes"
+        PubkeyAuthentication yes
+        LoginGraceTime 30
+        MaxAuthTries 3
+        X11Forwarding no"
         if [ -d "${'$'}{DROPIN_DIR}" ] && grep -qiE '^[[:space:]]*Include[[:space:]]+/etc/ssh/sshd_config\.d/' "${'$'}{MAIN}"; then
             printf '%s\n' "${'$'}{SETTINGS}" > "${'$'}{DROPIN}"
             ROLLBACK="rm -f ${'$'}{DROPIN}"
         else
             cp "${'$'}{MAIN}" "${'$'}{MAIN}.hy2setup.bak"
-            { printf '%s\n' "${'$'}{SETTINGS}"; grep -viE '^[[:space:]]*(PasswordAuthentication|ChallengeResponseAuthentication|KbdInteractiveAuthentication|PermitRootLogin|PubkeyAuthentication)[[:space:]]' "${'$'}{MAIN}.hy2setup.bak"; } > "${'$'}{MAIN}"
+            { printf '%s\n' "${'$'}{SETTINGS}"; grep -viE '^[[:space:]]*(PasswordAuthentication|ChallengeResponseAuthentication|KbdInteractiveAuthentication|PermitRootLogin|PubkeyAuthentication|LoginGraceTime|MaxAuthTries|X11Forwarding)[[:space:]]' "${'$'}{MAIN}.hy2setup.bak"; } > "${'$'}{MAIN}"
             ROLLBACK="cp ${'$'}{MAIN}.hy2setup.bak ${'$'}{MAIN}"
         fi
         if ! "${'$'}{SSHD}" -t; then
@@ -1141,7 +1170,93 @@ ${firewall()}
         fi
         systemctl reload ssh 2>/dev/null || systemctl reload sshd 2>/dev/null || service ssh reload 2>/dev/null || service sshd reload
         echo "Вход по паролю отключён, вход по ключу оставлен (PasswordAuthentication=no)."
+        echo "SSH ужесточён: LoginGraceTime 30, MaxAuthTries 3, X11Forwarding no."
     """.trimIndent()
+
+    const val FW_BIN = "/usr/local/sbin/vpngramm-fw"
+
+    /** Скрипт файрвола на сервере (ресурс hy2setup/vpngramm-fw.sh): apply | print | ports | off. */
+    val fwScript: String by lazy {
+        Scripts::class.java.getResourceAsStream("/hy2setup/vpngramm-fw.sh")!!.bufferedReader().use { it.readText() }
+    }
+
+    /**
+     * Ставит файрвол vpngramm и включает его с таймером отката: если через 3 минуты приложение не подтвердит
+     * вход новым подключением ([firewallConfirm]), правила снимутся сами. Чужие таблицы nftables не трогает.
+     */
+    fun firewallApply(): String = HEADER + "\n" + """
+        step "Файрвол: снаружи только SSH и порты VPN"
+        command -v systemctl >/dev/null 2>&1 || { echo "ОШИБКА: нужен systemd"; exit 1; }
+        if ! command -v nft >/dev/null 2>&1; then
+            command -v apt-get >/dev/null 2>&1 || { echo "ОШИБКА: нет nftables и apt-get"; exit 1; }
+            apt-get install -y -q nftables >/dev/null || { echo "ОШИБКА: не удалось поставить nftables"; exit 1; }
+        fi
+        echo '${gzB64(fwScript)}' | base64 -d | gunzip > $FW_BIN
+        chmod 755 $FW_BIN
+        cat > /etc/systemd/system/vpngramm-fw.service <<'UNIT'
+        [Unit]
+        Description=vpngramm firewall (only SSH and VPN ports)
+        After=network-pre.target
+        Wants=network-pre.target
+
+        [Service]
+        Type=oneshot
+        RemainAfterExit=yes
+        ExecStart=$FW_BIN apply
+        ExecStop=$FW_BIN off
+
+        [Install]
+        WantedBy=multi-user.target
+        UNIT
+        systemctl daemon-reload
+        # страховка: без подтверждения через 3 минуты правила снимутся
+        systemctl stop vpngramm-fw-rollback.timer vpngramm-fw-rollback.service 2>/dev/null || true
+        systemctl reset-failed vpngramm-fw-rollback.service 2>/dev/null || true
+        systemd-run --quiet --on-active=180 --unit=vpngramm-fw-rollback $FW_BIN off || { echo "ОШИБКА: не удалось поставить таймер отката — файрвол не включаю"; exit 1; }
+        if ! $FW_BIN apply; then $FW_BIN off; exit 1; fi
+        echo "Проверяю вход новым подключением; без подтверждения правила снимутся через 3 минуты."
+    """.trimIndent()
+
+    /** После успешного входа новым подключением: снять таймер отката и включать файрвол при загрузке. */
+    fun firewallConfirm(): String = HEADER + "\n" + """
+        systemctl stop vpngramm-fw-rollback.timer vpngramm-fw-rollback.service 2>/dev/null || true
+        systemctl enable vpngramm-fw.service >/dev/null 2>&1
+        systemctl start vpngramm-fw.service >/dev/null 2>&1 || true
+        echo "✓ Файрвол vpngramm включён и будет включаться после перезагрузки."
+        $FW_BIN ports | sed 's/^ssh:/  SSH:/; s/^vpn:/  VPN:/'
+    """.trimIndent()
+
+    /** fail2ban: бан за перебор паролей SSH (5 ошибок за 10 минут — бан на час, повторно дольше). */
+    fun fail2banInstall(): String = HEADER + "\n" + """
+        step "fail2ban: бан за перебор паролей SSH"
+        command -v apt-get >/dev/null 2>&1 || { echo "ОШИБКА: fail2ban ставится только на Debian/Ubuntu"; exit 1; }
+        if ! command -v fail2ban-client >/dev/null 2>&1 || ! command -v nft >/dev/null 2>&1; then
+            for i in 1 2 3 4 5 6; do
+                apt-get install -y -q fail2ban python3-systemd nftables >/dev/null 2>&1 && break
+                echo "apt занят или недоступен — повтор через 20 с…"; sleep 20
+            done
+        fi
+        command -v fail2ban-client >/dev/null 2>&1 || { echo "ОШИБКА: не удалось поставить fail2ban"; exit 1; }
+        SSHP=${'$'}( (sshd -T || /usr/sbin/sshd -T) 2>/dev/null | awk 'tolower(${'$'}1)=="port"{print ${'$'}2}' | sort -un | paste -sd, -)
+        mkdir -p /etc/fail2ban/jail.d
+        cat > /etc/fail2ban/jail.d/vpngramm.conf <<JAIL
+        ${F2B_JAIL.joinToString("\n        ")}
+        JAIL
+        systemctl enable fail2ban >/dev/null 2>&1 || true
+        systemctl restart fail2ban
+        for i in 1 2 3 4 5; do fail2ban-client status sshd >/dev/null 2>&1 && break; sleep 2; done
+        if fail2ban-client status sshd >/dev/null 2>&1; then
+            echo "✓ fail2ban следит за SSH (порт ${'$'}{SSHP:-22}): 5 неудачных входов за 10 минут — бан на час, повторно — дольше."
+        else
+            echo "ОШИБКА: fail2ban не запустил защиту SSH:"; journalctl -u fail2ban -n 15 --no-pager | cut -c1-200; exit 1
+        fi
+    """.trimIndent()
+
+    /** Правило fail2ban для SSH (порт подставляется на сервере из ${'$'}SSHP). */
+    val F2B_JAIL = listOf(
+        "[sshd]", "enabled = true", "port = ${'$'}{SSHP:-22}", "backend = systemd", "maxretry = 5", "findtime = 10m",
+        "bantime = 1h", "bantime.increment = true", "banaction = nftables-multiport", "ignoreip = 127.0.0.1/8 ::1",
+    )
 
     /** Перезагрузка через несколько секунд, чтобы SSH-сессия успела корректно закрыться. */
     fun reboot(): String = HEADER + "\n" + """
@@ -1314,7 +1429,8 @@ ${firewall()}
         systemctl disable --now mtg.service >/dev/null 2>&1 || true
         rm -f /etc/systemd/system/mtg.service /usr/local/bin/mtg /etc/mtg.toml
         systemctl daemon-reload || true
-        step "Готово. Правила файрвола (если открывали) нужно удалить вручную."
+        if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
+        step "Готово."
     """.trimIndent()
 
 }

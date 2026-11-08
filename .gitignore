@@ -11,3 +11,4 @@ app/src/main/jniLibs/
 .cache/
 tools/windows-launcher/*.syso
 .kotlin/
+default-keys.pub

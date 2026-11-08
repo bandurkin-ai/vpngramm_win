@@ -37,8 +37,8 @@ class HwKey(
 
     /** «YubiKey 5C Nano · ed25519 · резидентный». */
     val title: String
-        get() = listOf(name.ifEmpty { "Аппаратный ключ" }, if (ed25519) "ed25519" else "ecdsa P-256", if (resident) "резидентный" else "нерезидентный")
-            .joinToString(" · ")
+        get() = (listOf(name.ifEmpty { "Аппаратный ключ" }, if (ed25519) "ed25519" else "ecdsa P-256", if (resident) "резидентный" else "нерезидентный") +
+            listOfNotNull(application.takeIf { it != SkKey.APPLICATION })).joinToString(" · ")
 
     fun toJson(): String = JSONObject()
         .put("pub", Base64.getEncoder().encodeToString(publicKey))

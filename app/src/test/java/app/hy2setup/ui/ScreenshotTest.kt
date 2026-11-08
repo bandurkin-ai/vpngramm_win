@@ -49,6 +49,78 @@ class ScreenshotTest {
     @Test fun homeLight() = shot("1-home", 0, false)
     @Test fun homeDark() = shot("1-home", 0, true)
     @Test fun homeEmpty() = shot("1-home-empty", 0, false, withProfile = false)
+    /** Блок «Инструменты → Произвольный VPS» развёрнутым, отдельно от экрана. */
+    private fun vpsCardShot(name: String, model: MainViewModel) {
+        captureRoboImage("build/screens/$name-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { VpsCard(model, startExpanded = true) }
+                }
+            }
+        }
+    }
+
+    /** «Произвольный VPS»: запомненный чужой сервер, журнал и ссылки, выбрано несколько протоколов; журнал «Инструментов» не трогается. */
+    @Test
+    @Config(qualifiers = "w411dp-h2200dp-xxhdpi")
+    fun vpsTall() {
+        val model = vm(0).apply {
+            vpsHost = "198.51.100.7"; vpsPassword = "secret"; vpsHarden = true   // без ключа защита недоступна
+            toggleServerMode(app.hy2setup.ServerMode.HY2); toggleServerMode(app.hy2setup.ServerMode.AWG)
+            vpsLog += listOf("Подключаюсь к 198.51.100.7:22 и читаю настройки…", "Ссылок получено: 2. Они ниже.")
+            vpsResultLinks += ShareLink("VLESS", "vless://11111111-2222-3333-4444-555555555555@198.51.100.7:443?security=reality#vps")
+        }
+        org.junit.Assert.assertTrue(model.toolsLog.none { "198.51.100.7" in it })
+        vpsCardShot("3-tools-vps", model)
+    }
+
+    /** Вход по паролю: «Защитить после установки» недоступна, в заголовке — «выкл (нет SSH-ключа)». */
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test
+    @Config(qualifiers = "w411dp-h2600dp-xxhdpi")
+    fun vpsHardenNeedsKey() {
+        val model = vm(0).apply { vpsHost = "198.51.100.7"; vpsUseKey = false; vpsPassword = "secret"; vpsHarden = true }
+        compose.setContent {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(androidx.compose.ui.Modifier.padding(16.dp)) { VpsCard(model, startExpanded = true) }
+                }
+            }
+        }
+        compose.onNodeWithText("Защитить после установки: выкл (нет SSH-ключа)").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Нужен SSH-ключ — выберите «SSH-ключ» в блоке «Сервер»").assertExists()
+    }
+
+    /** «Параметры VLESS» в «Произвольном VPS»: маскировка под свой сервер с доменом. */
+    @Test
+    @Config(qualifiers = "w411dp-h2600dp-xxhdpi")
+    fun vpsSelfMask() {
+        val model = vm(0).apply {
+            vpsHost = "198.51.100.7"; vpsPassword = "secret"; vpsSelf = true; vpsDomain = ""
+            if (app.hy2setup.ServerMode.XHTTP !in serverModes) toggleServerMode(app.hy2setup.ServerMode.XHTTP)
+        }
+        vpsCardShot("3-tools-vps-selfmask", model)
+    }
+
+    /** «Инструменты»: все блоки закрыты, «Произвольный VPS» — первым в «Сервисе», «Контроля серверов» нет. */
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test
+    @Config(qualifiers = "w411dp-h2000dp-xxhdpi")
+    fun toolsAllCollapsed() {
+        val model = vm(2)
+        compose.setContent { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
+        compose.onNodeWithText("Произвольный VPS").assertExists()
+        compose.onNodeWithText("Контроль серверов").assertDoesNotExist()
+        compose.onNodeWithText("IP-адрес или домен сервера").assertDoesNotExist()   // «Доступ по SSH» закрыт
+        compose.onNodeWithText("Запомненные серверы").assertDoesNotExist()           // «Произвольный VPS» закрыт
+        compose.onNodeWithText("VPS").assertDoesNotExist()                             // вкладки «VPS» больше нет
+        com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/3-tools-collapsed-light.png")
+    }
+
     @Test fun cloudLight() = shot("2-cloud", 1, false)
     @Test fun cloudDark() = shot("2-cloud", 1, true)
     @Test fun toolsLight() = shot("3-tools", 2, false)
@@ -93,6 +165,59 @@ class ScreenshotTest {
         }
         org.junit.Assert.assertEquals(1000.0, model.trafficLimitGb(model.plusProfile!!))
         captureRoboImage("build/screens/1-home-traffic-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
+    }
+
+    /** «Инструменты → Ключи для всех серверов»: два ключа токена (тестовые). */
+    @Test
+    @Config(qualifiers = "w411dp-h1600dp-xxhdpi")
+    fun defaultKeysCard() {
+        val model = vm(2)
+        // начальный список сборки (если есть локальный default-keys.pub) заменяем тестовыми ключами
+        model.defaultKeys.toList().forEach { model.removeDefaultKey(it.blob) }
+        org.junit.Assert.assertTrue(model.addDefaultKeys("sk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAICCk8FhAsU6IeB/jEusJXp65VKtjeiTegEYM72oNsR1VAAAACnNzaDpteW5hbWU= token-main\nsk-ssh-ed25519@openssh.com AAAAGnNrLXNzaC1lZDI1NTE5QG9wZW5zc2guY29tAAAAIPvXyZsLqQHOBp1eGq776pyrG2NfxCuVe75DpCFpWdePAAAACHNzaDpza18y token-backup"))
+        org.junit.Assert.assertEquals(listOf("token-main", "token-backup"), model.defaultKeys.map { it.comment })
+        captureRoboImage("build/screens/3-tools-defaultkeys-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { DefaultKeysCard(model, startExpanded = true) }
+                }
+            }
+        }
+        // удалённый ключ после перезапуска не возвращается
+        model.removeDefaultKey(model.defaultKeys.first().blob)
+        val again = MainViewModel(ApplicationProvider.getApplicationContext<android.app.Application>())
+        org.junit.Assert.assertEquals(listOf("token-backup"), again.defaultKeys.map { it.comment })
+    }
+
+    /** «Инструменты → Доступ по SSH»: выбран сервер Главной, IP исправлен, но ещё не применён. */
+    @Test
+    @Config(qualifiers = "w411dp-h1400dp-xxhdpi")
+    fun toolsAccessEdit() {
+        val model = vm(2)
+        model.accessSelect("vpn.example.org")
+        model.host = "198.51.100.7"
+        org.junit.Assert.assertTrue(model.accessDirty)
+        captureRoboImage("build/screens/3-tools-access-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { SshAccessCard(model, startExpanded = true) }
+                }
+            }
+        }
+    }
+
+    /** Главная: вход на сервер не удался — кнопка «Исправить доступ по SSH». */
+    @Test
+    @Config(qualifiers = "w411dp-h1500dp-xxhdpi")
+    fun homeAccessProblem() {
+        val model = vm(0).apply { plusAccessProblem = true; plusLog += "ОШИБКА: Не удалось подключиться к 203.0.113.10:22" }
+        captureRoboImage("build/screens/1-home-access-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
     }
 
     /** «Инструменты → Аппаратные ключи»: YubiKey (ed25519, резидентный) и Рутокен (ecdsa, нерезидентный). */

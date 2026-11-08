@@ -24,9 +24,6 @@ class DesktopPlatform(override val dataDir: File = defaultDataDir()) : Platform 
     override val prefs: KeyValueStore = PropertiesStore(File(dataDir, "settings.properties"))
     override val secrets: SecretStorage = FileSecretStore(File(dataDir, "secrets.properties"), secretCipher(dataDir))
 
-    override val monitorSupported get() = false
-    override fun scheduleMonitor(hours: Int) {}
-    override fun monitorLastState(fqdn: String): Pair<Long, Boolean>? = null
 
     /** VPN на компьютере: поднят интерфейс туннеля (Happ, v2rayN, WireGuard, OpenVPN…). */
     override fun vpnActive(): Boolean = runCatching {

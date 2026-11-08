@@ -4,6 +4,8 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.material3.Button
+import androidx.compose.ui.Alignment
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.Checkbox
@@ -61,7 +63,7 @@ fun NameComFields(vm: MainViewModel, withZone: Boolean = true) {
 
 /** Карточка «Аккаунты»: всё, что нужно для работы с OneProvider и name.com. */
 @Composable
-fun AccountsCard(vm: MainViewModel, startExpanded: Boolean, withZone: Boolean = true) {
+fun AccountsCard(vm: MainViewModel, startExpanded: Boolean = false, withZone: Boolean = true) {
     val filled = vm.opApiKey.isNotBlank() && vm.opClientKey.isNotBlank() && vm.ncUser.isNotBlank() && vm.ncToken.isNotBlank()
     SectionCard(
         "Аккаунты", AppIcons.Key,
@@ -115,17 +117,49 @@ fun ServerHostField(vm: MainViewModel) {
     }
 }
 
-/** Карточка доступа к серверу по SSH. */
+/**
+ * «Доступ по SSH»: единственное место, где задаются и исправляются данные входа на серверы — и серверов Главной
+ * (IP, порт, пользователь, пароль или ключ), и любого другого. Изменения сохраняет кнопка «Применить».
+ */
 @Composable
-fun SshAccessCard(vm: MainViewModel) {
+fun SshAccessCard(vm: MainViewModel, startExpanded: Boolean? = null) {
     val keyPicker = rememberOpenDoc { vm.loadKeyFrom(it) }
     val target = vm.host.trim()
+    val home = vm.stableProfiles.firstOrNull { it.fqdn == vm.accessTarget }
+    var pick by remember { mutableStateOf(false) }
     SectionCard(
         "Доступ по SSH", AppIcons.Terminal,
-        subtitle = if (target.isEmpty()) "Сервер не указан" else "${vm.user.trim()}@$target · " + if (vm.useKey) "ключ" else "пароль",
-        collapsible = true, startExpanded = target.isEmpty(),
+        subtitle = (home?.fqdn?.let { "$it · " } ?: "") +
+            (if (target.isEmpty()) "адрес не указан" else "${vm.user.trim()}@$target · " + if (vm.useKey) "ключ" else "пароль") +
+            if (vm.accessDirty) " · не применено" else "",
+        collapsible = true, startExpanded = startExpanded ?: false,
     ) {
-        ServerHostField(vm)
+        Box(Modifier.fillMaxWidth()) {
+            OutlinedButton(onClick = { pick = true }, enabled = !vm.running, modifier = Modifier.fillMaxWidth()) {
+                Column(Modifier.weight(1f)) {
+                    Text("Сервер", style = MaterialTheme.typography.labelSmall)
+                    Text(vm.accessTitle(vm.accessTarget), maxLines = 1)
+                }
+                Icon(AppIcons.ExpandMore, null)
+            }
+            DropdownMenu(expanded = pick, onDismissRequest = { pick = false }) {
+                vm.stableProfiles.forEach { p ->
+                    DropdownMenuItem(
+                        text = { Column { Text(p.fqdn); Text("Главная · " + (p.vps?.ip?.ifBlank { null } ?: "IP не указан"), style = MaterialTheme.typography.bodySmall) } },
+                        onClick = { pick = false; vm.accessSelect(p.fqdn) },
+                    )
+                }
+                DropdownMenuItem(
+                    text = { Column { Text("Другой сервер"); Text("любой адрес, сохранённые серверы", style = MaterialTheme.typography.bodySmall) } },
+                    onClick = { pick = false; vm.accessSelect("") },
+                )
+            }
+        }
+        if (home != null) {
+            AppField("IP-адрес сервера", vm.host, { vm.host = it }, keyboard = KeyboardType.Uri, enabled = !vm.running)
+        } else {
+            ServerHostField(vm)
+        }
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             AppField("Порт", vm.sshPort, { vm.sshPort = it }, Modifier.weight(1f), KeyboardType.Number, enabled = !vm.running)
             AppField("Пользователь", vm.user, { vm.user = it }, Modifier.weight(2f), enabled = !vm.running)
@@ -141,9 +175,21 @@ fun SshAccessCard(vm: MainViewModel) {
                 AppField("Пароль для sudo", vm.password, { vm.password = it }, secret = true, keyboard = KeyboardType.Password, enabled = !vm.running)
             }
         }
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            Button(onClick = vm::accessApply, enabled = vm.accessDirty && !vm.running, modifier = Modifier.weight(1f)) { Text("Применить") }
+            OutlinedButton(onClick = vm::accessTest, enabled = !vm.running && target.isNotEmpty(), modifier = Modifier.weight(1f)) { Text("Проверить вход") }
+        }
+        if (vm.accessDirty) {
+            Hint("Изменения ещё не сохранены — нажмите «Применить» или отмените их.", color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = vm::accessRevert, enabled = !vm.running) { Text("Отменить изменения") }
+        }
         MoreHint(
-            "Пароль и ключ хранятся на ${Device.PREP} зашифрованными.",
-            "Поддерживаются ключи ed25519, RSA, ECDSA (OpenSSH, PEM, PuTTY .ppk). Пользователю не root нужен sudo и его пароль.",
+            if (home != null) "Этими данными приложение входит на ${home.fqdn} — с Главной и из «Инструментов». Пароль и ключ хранятся на ${Device.PREP} зашифрованными."
+            else "Пароль и ключ хранятся на ${Device.PREP} зашифрованными.",
+            "Выберите сервер Главной, чтобы исправить его IP, порт, пользователя, пароль или ключ: после «Применить» Главная входит на сервер уже с новыми данными. " +
+                "IP меняется только в приложении — A-запись домена правится во вкладке «VPS/DNS». " +
+                "«Другой сервер» — любой адрес; после первого входа он попадает в список сохранённых. Чтобы поставить VPN на чужой сервер, не добавляя его к своим, — блок «Произвольный VPS». " +
+                "Поддерживаются ключи ed25519, RSA, ECDSA (OpenSSH, PEM, PuTTY .ppk). Пользователю не root нужен sudo и его пароль.",
         )
     }
 }

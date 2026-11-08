@@ -61,7 +61,6 @@ class MainActivity : ComponentActivity() {
     override fun onResume() {
         super.onResume()
         app.hy2setup.platform.NfcHost.activity = this
-        vm.refreshMonitor()
     }
 
     override fun onNewIntent(intent: Intent) {
@@ -69,7 +68,5 @@ class MainActivity : ComponentActivity() {
         handle(intent)
     }
 
-    private fun handle(intent: Intent?) {
-        intent?.getStringExtra(Notifications.EXTRA_FQDN)?.let { vm.openFromNotification(it) }
-    }
+    private fun handle(intent: Intent?) {}
 }

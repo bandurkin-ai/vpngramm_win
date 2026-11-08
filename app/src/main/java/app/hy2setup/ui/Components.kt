@@ -101,7 +101,8 @@ fun SectionCard(
     modifier: Modifier = Modifier,
     subtitle: String? = null,
     collapsible: Boolean = true,
-    startExpanded: Boolean = true,
+    /** Все блоки по умолчанию закрыты. */
+    startExpanded: Boolean = false,
     /** Вызывается при сворачивании и разворачивании (true — развернули). */
     onExpandChange: ((Boolean) -> Unit)? = null,
     content: @Composable () -> Unit,

@@ -4,7 +4,11 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /** Сохранённый сервер «Доступа к серверам» вместе с его паролем и ключом. */
-data class SavedServer(val profile: ServerProfile, val password: String, val privateKey: String, val passphrase: String)
+data class SavedServer(
+    val profile: ServerProfile, val password: String, val privateKey: String, val passphrase: String,
+    /** Для чужих серверов блока «Произвольный VPS»: домен и маскировка VLESS под свой сервер. */
+    val domain: String = "", val self: Boolean = true,
+)
 
 /**
  * Настройки доступа для копии: «Доступ к серверам», имя (домен), ключи OneProvider и name.com.
@@ -19,6 +23,10 @@ data class BackupSettings(
     val servers: List<SavedServer> = emptyList(),
     /** Ключ Рутокена (открытый ключ и key handle, JSON); пусто — нет. Без самого токена бесполезен. */
     val hwKey: String = "",
+    /** «Ключи для всех серверов» — открытые ключи (JSON-массив строк authorized_keys); пусто — нет. */
+    val defaultKeys: String = "",
+    /** Чужие серверы блока «Произвольный VPS» (с паролями и ключами). */
+    val vpsServers: List<SavedServer> = emptyList(),
 ) {
     fun toJson(): JSONObject = JSONObject().apply {
         put("host", host); put("sshPort", sshPort); put("user", user); put("useKey", useKey)
@@ -26,12 +34,9 @@ data class BackupSettings(
         put("zone", zone); put("subdomain", subdomain); put("ttl", ttl); put("email", email); put("masquerade", masquerade)
         put("ncUser", ncUser); put("ncToken", ncToken); put("opApiKey", opApiKey); put("opClientKey", opClientKey)
         if (hwKey.isNotEmpty()) put("hwKey", hwKey)
-        put("servers", JSONArray().apply {
-            servers.forEach {
-                put(JSONObject().put("host", it.profile.host).put("port", it.profile.port).put("user", it.profile.user)
-                    .put("useKey", it.profile.useKey).put("password", it.password).put("privateKey", it.privateKey).put("passphrase", it.passphrase))
-            }
-        })
+        if (defaultKeys.isNotEmpty()) put("defaultKeys", defaultKeys)
+        put("servers", savedToJson(servers))
+        if (vpsServers.isNotEmpty()) put("vpsServers", savedToJson(vpsServers))
     }
 
     companion object {
@@ -43,16 +48,29 @@ data class BackupSettings(
             ncUser = o.optString("ncUser"), ncToken = o.optString("ncToken"),
             opApiKey = o.optString("opApiKey"), opClientKey = o.optString("opClientKey"),
             hwKey = o.optString("hwKey"),
-            servers = o.optJSONArray("servers")?.let { a ->
-                (0 until a.length()).mapNotNull { i ->
-                    val s = a.optJSONObject(i) ?: return@mapNotNull null
-                    SavedServer(
-                        ServerProfile(s.getString("host"), s.optInt("port", 22), s.optString("user", "root"), s.optBoolean("useKey")),
-                        s.optString("password"), s.optString("privateKey"), s.optString("passphrase"),
-                    )
-                }
-            }.orEmpty(),
+            defaultKeys = o.optString("defaultKeys"),
+            servers = savedFromJson(o.optJSONArray("servers")),
+            vpsServers = savedFromJson(o.optJSONArray("vpsServers")),
         )
+
+        private fun savedToJson(list: List<SavedServer>) = JSONArray().apply {
+            list.forEach {
+                put(JSONObject().put("host", it.profile.host).put("port", it.profile.port).put("user", it.profile.user)
+                    .put("useKey", it.profile.useKey).put("password", it.password).put("privateKey", it.privateKey).put("passphrase", it.passphrase)
+                    .also { j -> if (it.domain.isNotEmpty()) j.put("domain", it.domain); if (!it.self) j.put("self", false) })
+            }
+        }
+
+        private fun savedFromJson(a: JSONArray?): List<SavedServer> = a?.let {
+            (0 until a.length()).mapNotNull { i ->
+                val s = a.optJSONObject(i) ?: return@mapNotNull null
+                SavedServer(
+                    ServerProfile(s.getString("host"), s.optInt("port", 22), s.optString("user", "root"), s.optBoolean("useKey")),
+                    s.optString("password"), s.optString("privateKey"), s.optString("passphrase"),
+                    domain = s.optString("domain"), self = s.optBoolean("self", true),
+                )
+            }
+        }.orEmpty()
     }
 }
 

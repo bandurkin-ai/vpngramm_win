@@ -90,7 +90,7 @@ fun FirstRunWizard(vm: MainViewModel, onAddExisting: () -> Unit, startStep: Int 
                 NewServerProtocols(vm)
                 SwitchRow(
                     "Безопасность", vm.plusSecure, { vm.plusSecure = it }, enabled = !vm.running,
-                    subtitle = if (vm.plusSecure) "В конце: вход только по SSH-ключу, обновления" else "Вход по паролю root останется",
+                    subtitle = if (vm.plusSecure) "В конце: вход только по SSH-ключу, обновления, файрвол, fail2ban" else "Вход по паролю root останется",
                 )
             }
             else -> {

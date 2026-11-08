@@ -96,14 +96,8 @@ internal fun ProtocolStatusRow(p: StableProfile) {
 }
 
 /** Общий итог сервера для цветной точки: зелёный — всё работает, красный — что-то нет, серый — не проверялся. */
-internal fun overallOk(p: StableProfile, monitor: Pair<Long, Boolean>?): Boolean? {
-    val fromCheck = if (p.checkAt > 0 && p.status.isNotEmpty()) p.status.values.all { it } else null
-    // свежее из двух: ручная проверка или фоновый контроль
-    return when {
-        monitor != null && monitor.first > p.checkAt -> monitor.second
-        else -> fromCheck
-    }
-}
+internal fun overallOk(p: StableProfile): Boolean? =
+    if (p.checkAt > 0 && p.status.isNotEmpty()) p.status.values.all { it } else null
 
 @Composable
 internal fun StatusDot(ok: Boolean?) {
@@ -167,7 +161,7 @@ internal fun BackupBanner(onSave: () -> Unit) {
 internal fun PeopleCard(vm: MainViewModel, p: StableProfile, onLinks: (ProfileUser?) -> Unit) {
     var add by remember { mutableStateOf(false) }
     var name by remember { mutableStateOf("") }
-    SectionCard("Люди (${1 + p.users.size})", AppIcons.Key, collapsible = true, startExpanded = p.users.isNotEmpty(),
+    SectionCard("Люди (${1 + p.users.size})", AppIcons.Key, collapsible = true,
         subtitle = "У каждого свои ключи — можно отключить одного") {
         PersonRow("Я (владелец)", "ключи сервера", null, vm, onLinks = { onLinks(null) })
         p.users.forEach { u ->

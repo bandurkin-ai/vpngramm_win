@@ -66,6 +66,9 @@ class DesktopInteractionTest {
         onNodeWithText("Доступ по SSH").assertExists()
         onNodeWithText("Аппаратные ключи").assertDoesNotExist()
         onNodeWithText("Забыть пароли и токены").assertExists()
+        onNodeWithText("Произвольный VPS").assertExists()
+        onNodeWithText("Контроль серверов").assertDoesNotExist()
+        onNodeWithText("VPS").assertDoesNotExist()
         save(onAllNodes(isRoot())[0].captureToImage(), "5-tools-no-monitor")
     }
 
@@ -76,6 +79,6 @@ class DesktopInteractionTest {
         onNodeWithText("Удалить с компьютера", substring = true).assertExists()
         // блока «Контроль серверов» в Windows-версии нет
         onNodeWithText("Контроль серверов").assertDoesNotExist()
-        onNodeWithText("vpngramm v4.0", substring = true).assertExists()
+        onNodeWithText("vpngramm v4.6", substring = true).assertExists()
     }
 }

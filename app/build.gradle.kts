@@ -12,8 +12,8 @@ android {
         applicationId = "app.hy2setup"
         minSdk = 26
         targetSdk = 35
-        versionCode = 52
-        versionName = "4.0"
+        versionCode = 60
+        versionName = "4.6"
     }
 
     buildTypes {
@@ -45,6 +45,19 @@ android {
         jniLibs.useLegacyPackaging = true
     }
 }
+
+// «Ключи для всех серверов»: начальный список из локального default-keys.pub (в репозиторий не выкладывается)
+val genDefaultKeys = tasks.register("genDefaultKeys") {
+    val src = rootProject.file("default-keys.pub")
+    val out = layout.buildDirectory.dir("generated/defaultKeys")
+    outputs.dir(out)
+    inputs.property("keys", providers.provider { if (src.exists()) src.readText() else "" })
+    doLast {
+        out.get().file("hy2setup/default-keys.txt").asFile.apply { parentFile.mkdirs(); writeText(if (src.exists()) src.readText() else "") }
+    }
+}
+android.sourceSets["main"].resources.srcDir(layout.buildDirectory.dir("generated/defaultKeys"))
+tasks.named("preBuild") { dependsOn(genDefaultKeys) }
 
 dependencies {
     val composeBom = platform("androidx.compose:compose-bom:2024.10.01")

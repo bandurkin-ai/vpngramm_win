@@ -67,7 +67,7 @@ private fun VpsPart(vm: MainViewModel) {
     SectionCard(
         "Ключи API", AppIcons.Key,
         subtitle = if (keysSet) "Указаны" else "Нужны для работы с OneProvider",
-        collapsible = true, startExpanded = !keysSet,
+        collapsible = true,
     ) { OneProviderFields(vm) }
 
     ErrorText(vm.opError)
@@ -246,7 +246,7 @@ private fun DnsPart(vm: MainViewModel) {
     SectionCard(
         "Аккаунт и домен", AppIcons.Key,
         subtitle = vm.zone.trim().ifEmpty { "Домен не указан" },
-        collapsible = true, startExpanded = !vm.dnsLoaded,
+        collapsible = true,
     ) {
         NameComFields(vm)
         FilledTonalButton(onClick = vm::loadDns, enabled = !vm.running, modifier = Modifier.fillMaxWidth()) {

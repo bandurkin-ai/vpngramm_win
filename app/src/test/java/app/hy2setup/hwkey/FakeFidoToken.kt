@@ -26,7 +26,7 @@ class FakeFidoToken(
     val strictPin: Boolean = false,
     override val name: String = "Fake FIDO2",
 ) : HwTransport {
-    private class Cred(val alg: Int, val kp: KeyPair, val rpIdHash: ByteArray, val resident: Boolean)
+    private class Cred(val alg: Int, val kp: KeyPair, val rpIdHash: ByteArray, val resident: Boolean, val rpId: String = "")
     private val creds = LinkedHashMap<String, Pair<ByteArray, Cred>>()
     private var counter = 0L
     private var pinToken: ByteArray? = null
@@ -50,11 +50,11 @@ class FakeFidoToken(
         mapOf(1 to 2, 3 to -7, -1 to 1, -2 to pad32(w.affineX), -3 to pad32(w.affineY))
     }
 
-    private fun newCred(alg: Int, rpIdHash: ByteArray, resident: Boolean): Pair<ByteArray, Cred> {
+    private fun newCred(alg: Int, rpIdHash: ByteArray, resident: Boolean, rpId: String = ""): Pair<ByteArray, Cred> {
         val kp = if (alg == Ctap2.EDDSA) KeyPairGenerator.getInstance("Ed25519").generateKeyPair()
         else KeyPairGenerator.getInstance("EC").apply { initialize(ECGenParameterSpec("secp256r1")) }.generateKeyPair()
         val id = ByteArray(64).also { SecureRandom().nextBytes(it) }
-        return (id to Cred(alg, kp, rpIdHash, resident)).also { creds[key(id)] = it }
+        return (id to Cred(alg, kp, rpIdHash, resident, rpId)).also { creds[key(id)] = it }
     }
 
     private fun sign(c: Cred, msg: ByteArray): ByteArray =
@@ -116,7 +116,7 @@ class FakeFidoToken(
         val needPin = pin != null && (rk || strictPin)
         if (needPin && !pinOk(cdh, p.at(8))) return err(Ctap2.ERR_PUAT_REQUIRED)
         if (rk && pin == null) return err(Ctap2.ERR_PIN_NOT_SET)       // как YubiKey: резидентный — только с PIN
-        val (id, c) = newCred(alg, sha(rpId.toByteArray()), rk)
+        val (id, c) = newCred(alg, sha(rpId.toByteArray()), rk, rpId)
         val auth = c.rpIdHash + byteArrayOf(0x45) + ByteArray(4) + ByteArray(16) + byteArrayOf((id.size shr 8).toByte(), id.size.toByte()) + id + Cbor.encode(cose(c))
         return ok(mapOf(1 to "packed", 2 to auth, 3 to emptyMap<String, Any>()))
     }
@@ -161,6 +161,14 @@ class FakeFidoToken(
 
     private fun credMgmt(p: Map<*, *>): ByteArray {
         when ((p.at(1) as Long).toInt()) {
+            2 -> {
+                if (!pinOk(byteArrayOf(2), p.at(4))) return err(Ctap2.ERR_PUAT_REQUIRED)
+                rps = ArrayDeque(creds.values.filter { it.second.resident }.map { it.second.rpId }.distinct())
+                if (rps.isEmpty()) return err(Ctap2.ERR_NO_CREDENTIALS)
+                val total = rps.size
+                return ok(nextRp() + (5 to total))
+            }
+            3 -> return ok(nextRp())
             4 -> {
                 val sub = p.at(2) as Map<*, *>
                 if (!pinOk(byteArrayOf(4) + Cbor.encode(sub), p.at(4))) return err(Ctap2.ERR_PUAT_REQUIRED)
@@ -173,6 +181,12 @@ class FakeFidoToken(
             5 -> return ok(next())
             else -> return err(0x2B)
         }
+    }
+
+    private var rps = ArrayDeque<String>()
+    private fun nextRp(): Map<Int, Any?> {
+        val id = rps.removeFirst()
+        return mapOf(3 to mapOf("id" to id), 4 to sha(id.toByteArray()))
     }
 
     private fun next(): Map<Int, Any?> {

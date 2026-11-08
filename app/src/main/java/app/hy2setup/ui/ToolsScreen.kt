@@ -20,38 +20,29 @@ import androidx.compose.ui.graphics.vector.ImageVector
 import app.hy2setup.MainViewModel
 import app.hy2setup.platform.Device
 
-/** Инструменты: доступ к серверам (SSH и аппаратные ключи), контроль серверов, служебные действия. Новый сервер создаётся на Главной. */
+/** Инструменты: доступ к серверам (SSH и аппаратные ключи), произвольный VPS, служебные действия. Новый сервер создаётся на Главной. */
 @Composable
 fun ToolsScreen(vm: MainViewModel) {
     var ask by remember { mutableStateOf<String?>(null) }
     val version = rememberAppVersion()
+    androidx.compose.runtime.LaunchedEffect(Unit) { vm.accessRefresh() }
 
     ScreenFrame(title = "Инструменты", running = vm.running) {
         Text("Доступ к серверам", style = MaterialTheme.typography.titleMedium)
         SshAccessCard(vm)
+        DefaultKeysCard(vm)
         if (vm.hwKeySupported) HwKeysCard(vm)
-        SectionCard("Защитить сервер", AppIcons.Shield, startExpanded = false, subtitle = "Обновления и вход только по SSH-ключу") {
-            Hint("Для сервера из «Доступа по SSH»: обновления, автообновления и вход только по SSH-ключу. Протоколы и ссылки не меняются.")
+        SectionCard("Защитить сервер", AppIcons.Shield, subtitle = "Обновления и вход только по SSH-ключу") {
+            Hint("Для сервера из «Доступа по SSH»: обновления, автообновления, вход только по SSH-ключу, файрвол и fail2ban. Протоколы и ссылки не меняются.")
+            MoreHint("Можно повторять: уже защищённый сервер получит файрвол и fail2ban.", "Файрвол: снаружи открыты только SSH и порты VPN — другие службы на сервере станут недоступны извне. fail2ban банит за перебор паролей SSH; SSH ужесточён (LoginGraceTime 30, MaxAuthTries 3, без X11). Если после включения файрвола войти не удастся, через 3 минуты он снимется сам.")
             FilledTonalButton(onClick = { ask = "secure" }, enabled = !vm.running && vm.host.isNotBlank(), modifier = Modifier.fillMaxWidth()) {
                 Text("Защитить сервер ${vm.host.trim()}".trim())
             }
         }
-        if (vm.log.isNotEmpty() || vm.running) ResultPanel(vm.log, vm.running, emptyList(), title = "Журнал")
+        ErrorText(vm.errorMessage)
+        if (vm.toolsLog.isNotEmpty() || (vm.running && !vm.vpsBusy && vm.selectedTab == app.hy2setup.TAB_TOOLS)) ResultPanel(vm.toolsLog, vm.running && !vm.vpsBusy, emptyList(), title = "Журнал")
         Text("Сервис", style = MaterialTheme.typography.titleMedium)
-        if (vm.monitorSupported) SectionCard(
-            "Контроль серверов", AppIcons.Shield,
-            subtitle = if (vm.monitorHours == 0) "Выключен" else "Проверка раз в ${vm.monitorHours} ч",
-        ) {
-            Segmented(
-                listOf(0 to "Выкл", 1 to "1 ч", 3 to "3 ч", 6 to "6 ч"), vm.monitorHours, { vm.setMonitor(it) },
-                modifier = Modifier.fillMaxWidth(),
-            )
-            MoreHint(
-                "Телефон сам проверяет серверы Главной и сообщит, если сервер перестал отвечать.",
-                "Проверка — как у клиента VLESS: соединение и TLS с сервером. После двух неудач подряд придёт уведомление с кнопкой " +
-                    "«Заменить сервер». Если на телефоне включён VPN, тревога не поднимается: проверка могла идти через этот же сервер.",
-            )
-        }
+        VpsCard(vm)
         ToolGroup {
             ToolItem(AppIcons.Key, "Забыть пароли и токены", "Удалить с ${Device.GEN} сохранённые пароли, ключ SSH и токены", !vm.running) { ask = "secrets" }
             ToolItem(AppIcons.Shield, "Сбросить доверенные серверы", "Снова спрашивать отпечаток при подключении", !vm.running) { ask = "hosts" }
@@ -65,7 +56,7 @@ fun ToolsScreen(vm: MainViewModel) {
         "secure" -> ConfirmDialog(
             "Защитить сервер ${vm.host.trim()}?",
             "На сервере обновятся пакеты и включатся автообновления, вход по паролю будет отключён — только после того, как вход по SSH-ключу проверен. " +
-                "Нужен приватный SSH-ключ, уже добавленный на сервер.",
+                "Нужен приватный SSH-ключ, уже добавленный на сервер.\nФайрвол: снаружи открыты только SSH и порты VPN — другие службы на сервере станут недоступны извне. fail2ban банит за перебор паролей SSH; SSH ужесточён (LoginGraceTime 30, MaxAuthTries 3, без X11).",
             "Защитить", onConfirm = { ask = null; vm.secureNow() }, onDismiss = { ask = null },
         )
         "secrets" -> ConfirmDialog(
