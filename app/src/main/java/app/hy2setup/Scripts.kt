@@ -995,9 +995,18 @@ ${firewall()}
      * Установка AmneziaWG фоновой задачей «awg» (сборка модуля идёт минуты, обрыв связи её не прерывает).
      * На Debian 12 с ядром старше 6.7 сначала ставится ядро из bookworm-backports и печатается [AWG_REBOOT].
      */
-    fun installAwg(p: AwgParams): String {
+    /** Подготовка репозитория Amnezia (ресурс hy2setup/awg-repo.sh): повторы, обход сбоя DNS, понятная ошибка. */
+    val awgRepoScript: String by lazy {
+        Scripts::class.java.getResourceAsStream("/hy2setup/awg-repo.sh")!!.bufferedReader().use { it.readText() }
+    }
+
+    /** Полный скрипт установки AmneziaWG (тело фоновой задачи) — для проверки в тестах. */
+    internal fun awgJobBodyForTest(p: AwgParams): String = jobBody(awgRepoScript + "\ntrap awg_hosts_cleanup EXIT\n" + awgBody(p))
+
+    /** Тело установки AmneziaWG (без подготовки репозитория — она в [awgRepoScript]). */
+    private fun awgBody(p: AwgParams): String {
         val key = Scripts::class.java.getResourceAsStream("/hy2setup/amnezia-ppa.asc")!!.bufferedReader().use { it.readText() }
-        val body = """
+        return """
             PORT=${p.port}
             step "Проверка системы"
             command -v systemctl >/dev/null 2>&1 || { echo "ОШИБКА: нужен systemd"; exit 1; }
@@ -1042,7 +1051,8 @@ ${firewall()}
             esac
             echo "deb [signed-by=/etc/apt/keyrings/amnezia-ppa.gpg] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu ${'$'}C main" \
                 > /etc/apt/sources.list.d/amnezia-ppa.list
-            apt-get -q update
+            # повторы и обход сбоя DNS (awg-repo.sh); без пакетов из PPA дальше идти бессмысленно
+            awg_repo_prepare || exit 1
 
             step "Сборка модуля ядра AmneziaWG (DKMS) — несколько минут"
             HDR="linux-headers-${'$'}KVER"
@@ -1051,6 +1061,7 @@ ${firewall()}
                 [ "${'$'}ID" = ubuntu ] && HDR=linux-headers-generic
             fi
             apt-get -q -y -o Dpkg::Use-Pty=0 install dkms build-essential "${'$'}HDR" amneziawg-dkms amneziawg-tools
+            awg_hosts_cleanup
             if ! modprobe amneziawg; then
                 echo "ОШИБКА: модуль AmneziaWG собран, но не загрузился. Частая причина — Secure Boot у VPS."
                 dkms status 2>/dev/null | grep -i amnezia || true
@@ -1089,8 +1100,11 @@ ${firewall()}
             if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
             echo "ВАЖНО: если у хостинга есть свой файрвол (Security Group), откройте там ${'$'}PORT/udp."
         """.trimIndent()
-        return jobStart("awg", jobBody(body), "Установка AmneziaWG уже идёт")
     }
+
+    /** Установка AmneziaWG фоновой задачей. Подготовка репозитория — общий фрагмент (проверяется тестом); временную строку hosts убираем при любом выходе. */
+    fun installAwg(p: AwgParams): String =
+        jobStart("awg", jobBody(awgRepoScript + "\ntrap awg_hosts_cleanup EXIT\n" + awgBody(p)), "Установка AmneziaWG уже идёт")
 
     const val FACT_MARKER = "##FACT|"
 

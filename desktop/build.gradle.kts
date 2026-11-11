@@ -10,7 +10,7 @@ plugins {
  * плюс своя реализация платформенного слоя (desktop/src/main/kotlin).
  */
 
-val appVersion = "4.7"
+val appVersion = "4.7.1"
 
 /** Файлы, которые есть только в Android-версии (службы, Android Keystore, USB и NFC и т. п.). */
 val androidOnly = listOf(
