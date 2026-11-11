@@ -23,6 +23,12 @@ vpn_ports() {
         out="$out ${P:-443}/udp"
         # Let's Encrypt проверяет домен по 80/tcp
         grep -q '^acme:' "$C" && out="$out 80/tcp"
+        # сайт домена с подпиской Happ: Hysteria2 отдаёт его по HTTPS (masquerade.listenHTTPS), если адрес не локальный
+        P=$(sed -n 's/^ *listenHTTPS: *//p' "$C" | head -1 | tr -d ' "'"'")
+        case "$P" in
+            ""|127.*|localhost:*|"[::1]"*) ;;
+            *) P=${P##*:}; case "$P" in ''|*[!0-9]*) ;; *) out="$out $P/tcp" ;; esac ;;
+        esac
     fi
     if [ -f "$R/usr/local/etc/xray/config.json" ]; then
         P=$(sed -n 's/^PORT=//p' "$R/usr/local/etc/xray/hy2setup.env" 2>/dev/null | head -1)

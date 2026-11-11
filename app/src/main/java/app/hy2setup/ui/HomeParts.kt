@@ -134,7 +134,8 @@ internal fun TrafficBlock(vm: MainViewModel, p: StableProfile) {
                 },
             )
         }
-        if (bal != null) Text("Баланс OneProvider: $bal", style = MaterialTheme.typography.bodyMedium, color = onHero)
+        // баланс OneProvider — в долларах: «$» ставится, если API не прислал его сам
+        if (bal != null) Text("Баланс OneProvider: " + (if ('$' in bal) bal else "$$bal"), style = MaterialTheme.typography.bodyMedium, color = onHero)
     }
 }
 

@@ -48,6 +48,7 @@ private const val LIVE_SECONDS = 90
 /** Ключ постоянного профиля «Комбайна+» в SecretStore. */
 private const val PLUS_PROFILE = "plusProfile"
 private const val STABLE_PROFILES = "stableProfiles"
+private const val ROLLBACK_KEY = "plusRollback"
 
 data class DnsPlan(
     val username: String,
@@ -630,7 +631,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                 failed.size < jobs.size -> addLog(log, "Не установилось: ${failed.joinToString()}. Остальное готово — ссылки ниже.")
                 else -> {
                     addLog(log, "Установка не удалась.")
-                    if (dnsPlan != null) addLog(log, "A-запись ${dnsPlan.fqdn} осталась в name.com. Её можно удалить на вкладке DNS.")
+                    if (dnsPlan != null) addLog(log, "A-запись ${dnsPlan.fqdn} осталась в name.com. Её можно удалить во вкладке «VPS/DNS».")
                 }
             }
             if (failed.size < jobs.size) secureIfNeeded(ssh, log)
@@ -851,14 +852,14 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     ): String {
         val ip = resolveIpv4(sshHost)
             ?: throw NameComException("Для A-записи нужен IPv4-адрес сервера. Введите IPv4 (например, 203.0.113.10) в поле «Адрес» («Инструменты» → «Доступ к серверам»).")
-        val client = NameComClient(plan.username, plan.token)
+        val client = ncApi(plan.username, plan.token)
         addLog(target, "Проверяю доступ к name.com…")
         client.hello()
         addLog(target, "Читаю записи зоны ${plan.zone}…")
         val sameName = client.listRecords(plan.zone).filter { sameFqdn(it, plan.fqdn) }
 
         if (sameName.any { it.type == "CNAME" }) {
-            throw NameComException("Для ${plan.fqdn} уже есть запись CNAME, она несовместима с A. Удалите её на вкладке DNS.")
+            throw NameComException("Для ${plan.fqdn} уже есть запись CNAME, она несовместима с A. Удалите её во вкладке «VPS/DNS».")
         }
         if (dropAaaa) {
             for (r in sameName.filter { it.type == "AAAA" }) {
@@ -877,7 +878,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             if (!allowOverwrite) {
                 throw NameComException(
                     "Для ${plan.fqdn} уже есть A-запись ($old). Включите «Перезаписать существующую A-запись» " +
-                        "или удалите её на вкладке DNS.",
+                        "или удалите её во вкладке «VPS/DNS».",
                 )
             }
             for (r in aRecords) {
@@ -974,7 +975,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             val aaaa = DnsCheck.resolveAAAA(fqdn)
             if (aaaa.isNotEmpty()) {
                 problems++
-                addLog(target, "ПРОБЛЕМА: у $fqdn есть IPv6-запись (AAAA) ${aaaa.joinToString()} — удалите её на вкладке DNS")
+                addLog(target, "ПРОБЛЕМА: у $fqdn есть IPv6-запись (AAAA) ${aaaa.joinToString()} — удалите её во вкладке «VPS/DNS»")
             }
         }
         val host = fqdn.ifEmpty { ssh.host }
@@ -2104,19 +2105,19 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
      * или пакеты с телефона до сервера не доходят (тайм-аут). Во втором случае проверяет, пропускает ли сеть телефона
      * SSH вообще (github.com:22) и что говорит OneProvider о VPS — чтобы сказать, где искать причину.
      */
-    private suspend fun waitForSsh(ip: String, target: SnapshotStateList<String>, limitMs: Long, op: OneProviderClient?, vmId: String?) {
+    private suspend fun waitForSsh(ip: String, target: SnapshotStateList<String>, limitMs: Long, op: OneProviderClient?, vmId: String?, port: Int = 22) {
         val start = System.currentTimeMillis()
         var timeouts = 0
         var diagnosed = false
         var phoneBlocksSsh: Boolean? = null
         while (true) {
-            val (r, msg) = tcpProbe(ip, 22)
+            val (r, msg) = tcpProbe(ip, port)
             val sec = (System.currentTimeMillis() - start) / 1000
             when (r) {
                 Probe.OPEN -> return
                 Probe.REFUSED -> addLog(target, "Сервер отвечает, но SSH ещё не запущен — жду… ($sec с)")
-                Probe.TIMEOUT -> { timeouts++; addLog(target, "Порт 22 не отвечает (пакеты теряются) — жду… ($sec с)") }
-                Probe.ERROR -> addLog(target, "Порт 22: $msg — жду… ($sec с)")
+                Probe.TIMEOUT -> { timeouts++; addLog(target, "Порт $port не отвечает (пакеты теряются) — жду… ($sec с)") }
+                Probe.ERROR -> addLog(target, "Порт $port: $msg — жду… ($sec с)")
             }
             if (!diagnosed && timeouts >= 6) {
                 diagnosed = true
@@ -2202,6 +2203,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         val wasSelected = plusProfile?.fqdn == fqdn
         stableProfiles.removeAll { it.fqdn == fqdn }
         secrets.put(STABLE_PROFILES, ProfileImport.encodeList(stableProfiles))
+        if (plusRollback?.fqdn == fqdn) saveRollback(null)
         if (wasSelected) {
             selectStableQuiet(stableProfiles.firstOrNull()?.fqdn.orEmpty())
             plusLinks.clear(); plusSteps.clear(); plusLog.clear()
@@ -2315,7 +2317,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     }
 
     /** Выбранный свободный сервер для переезда (null — покупаем новый VPS). */
-    val plusTarget: CombineServer? get() = plusTargetId.takeIf { it.isNotEmpty() }?.let { id -> combineServers.firstOrNull { it.vpsId == id } }
+    val plusTarget: CombineServer? get() = plusTargetId.takeIf { it.isNotEmpty() }?.let { id -> combineServers.firstOrNull { it.key == id } }
 
     /** Свободные готовые серверы: ни один профиль Главной на них сейчас не работает (иначе сломались бы его ссылки). */
     val plusTargets: List<CombineServer>
@@ -2335,25 +2337,34 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     /** Убирает сервер из списка (сам VPS не трогается). */
     fun forgetCombineServer(srv: CombineServer) {
-        combineServers.removeAll { it.vpsId == srv.vpsId }
-        if (plusTargetId == srv.vpsId) plusTargetId = ""
+        combineServers.removeAll { it.key == srv.key }
+        if (plusTargetId == srv.key) plusTargetId = ""
         saveCombineServers()
     }
 
-    private fun dropCombineServer(vpsId: String) {
-        if (combineServers.removeAll { it.vpsId == vpsId }) saveCombineServers()
-        if (plusTargetId == vpsId) plusTargetId = ""
+    /** Убирает свободный сервер по ключу записи (ID VPS или «ip:адрес»). */
+    private fun dropCombineServer(key: String) {
+        if (key.isEmpty()) return
+        if (combineServers.removeAll { it.key == key }) saveCombineServers()
+        if (plusTargetId == key) plusTargetId = ""
     }
 
-    /** Сохранённые для сервера пароль root и ключ (из списка серверов «Доступа к серверам»). */
+    /** Сохранённая запись сервера («Доступ по SSH»): порт и пользователь; если её нет — root на порту 22. */
+    private fun savedServer(ip: String): ServerProfile = profiles.firstOrNull { it.host == ip } ?: ServerProfile(ip, 22, "root", false)
+
+    /** Сохранённые для сервера пароль и ключ (из списка серверов «Доступа к серверам»). */
     private fun savedCredentials(ip: String): Pair<String, String> {
-        val p = ServerProfile(ip, 22, "root", false)
+        val p = savedServer(ip)
         val key = secrets.get(secretKey(p, "privateKey")).ifBlank { privateKey }
         return secrets.get(secretKey(p, "password")) to key
     }
 
-    /** Есть ли VPS свободного сервера в аккаунте OneProvider (null — список VPS ещё не загружен). */
-    fun combineServerAlive(srv: CombineServer): Boolean? = if (!opLoaded) null else opVms.any { it.id == srv.vpsId || it.ip == srv.ip }
+    /**
+     * Есть ли VPS свободного сервера в аккаунте OneProvider (null — список VPS ещё не загружен
+     * или сервер добавлен вручную и к OneProvider не относится).
+     */
+    fun combineServerAlive(srv: CombineServer): Boolean? =
+        if (srv.manual || !opLoaded) null else opVms.any { it.id == srv.vpsId || it.ip == srv.ip }
 
     fun plusRequest() {
         plusError = null
@@ -2388,7 +2399,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         val profile = plusProfile ?: run { plusError = "Сначала создайте сервер на Главной — свободный сервер подходит только для переезда."; return }
         val (pass, key) = savedCredentials(t.ip)
         val problem = when {
-            t.vpsId == profile.vps?.id || t.ip == profile.vps?.ip -> "Профиль уже работает на этом сервере."
+            (t.vpsId.isNotEmpty() && t.vpsId == profile.vps?.id) || t.ip == profile.vps?.ip -> "Профиль уже работает на этом сервере."
             combineServerAlive(t) == false -> "VPS ${t.title} не найден в аккаунте OneProvider — возможно, он удалён. Уберите его из списка."
             key.isBlank() && pass.isEmpty() -> "Нет доступа к ${t.ip}: нужен пароль root или приватный ключ в «Доступе к серверам» (Инструменты)."
             t.secured && key.isBlank() -> "Сервер ${t.title} пускает только по ключу — вставьте приватный ключ в «Доступе к серверам» (Инструменты)."
@@ -2408,10 +2419,11 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     private suspend fun existingSsh(t: CombineServer, target: SnapshotStateList<String>): Pair<SshConfig, SshConfig> = sshFor(t.ip, target)
 
     private suspend fun sshFor(ip: String, target: SnapshotStateList<String>): Pair<SshConfig, SshConfig> {
+        val sp = savedServer(ip)
         val (saved, key) = savedCredentials(ip)
         // пароль: сохранённый для этого сервера или введённый в «Доступе к серверам» (Инструменты), если там тот же адрес
         val pass = saved.ifEmpty { if (host.trim() == ip) password else "" }
-        val keyCfg = SshConfig(ip, 22, "root", pass, key, if (key == privateKey) passphrase else secrets.get(secretKey(ServerProfile(ip, 22, "root", false), "passphrase")))
+        val keyCfg = SshConfig(ip, sp.port, sp.user, pass, key, if (key == privateKey) passphrase else secrets.get(secretKey(sp, "passphrase")))
         if (key.isNotBlank()) {
             try {
                 val seen = AtomicBoolean(false)
@@ -2426,14 +2438,123 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                 addLog(target, "Сервер не принял ключ — вхожу по паролю root.")
             }
         }
-        if (pass.isEmpty()) throw IllegalStateException("Сервер $ip не пустил по ключу, а пароль root не сохранён.")
+        if (pass.isEmpty()) throw IllegalStateException(
+            if (key.isBlank()) "Для $ip не сохранены ни пароль, ни SSH-ключ — введите их." else "Сервер $ip не пустил по ключу, а пароль не сохранён.",
+        )
         return keyCfg.copy(privateKey = "", keyPassphrase = "") to keyCfg
     }
 
-    // ---------- «Добавить работающий сервер» ----------
+    // ---------- «Добавить работающий сервер» и «Добавить сервер по IP» (свободные серверы) ----------
     var importFqdn by mutableStateOf("")
+    /** IP-адрес (или имя) сервера — общий для «Добавить работающий сервер» и «Добавить сервер по IP». */
     var importHost by mutableStateOf("")
     var importError by mutableStateOf<String?>(null)
+
+    // данные входа на добавляемый сервер; пустые пароль и ключ — взять сохранённые («Доступ по SSH»)
+    var freePort by mutableStateOf("22")
+    var freeUser by mutableStateOf("root")
+    var freeUseKey by mutableStateOf(false)
+    var freePassword by mutableStateOf("")
+    var freeKey by mutableStateOf("")
+    var freePassphrase by mutableStateOf("")
+    /** Ошибка формы «Добавить сервер по IP». */
+    var freeError by mutableStateOf<String?>(null)
+    /** Идёт проверка добавляемого сервера (показывается в форме). */
+    var freeBusy by mutableStateOf(false)
+        private set
+
+    fun freeLoadKeyFrom(doc: Doc) {
+        try {
+            freeKey = doc.read().toString(Charsets.UTF_8)
+        } catch (e: Exception) {
+            freeError = "Не удалось прочитать файл ключа: ${e.message}"
+        }
+    }
+
+    /** Что не так с полями входа формы (null — всё в порядке); пустые пароль и ключ допустимы — возьмём сохранённые. */
+    private fun freeLoginProblem(): String? {
+        val port = freePort.trim().toIntOrNull()
+        val u = freeUser.trim()
+        return when {
+            port == null || port !in 1..65535 -> "SSH-порт должен быть числом 1–65535."
+            u.isEmpty() || !Regex("^[A-Za-z_][A-Za-z0-9_.-]*$").matches(u) -> "Укажите пользователя (обычно root)."
+            freeUseKey && freeKey.isNotBlank() && SshKeys.publicOf(freeKey, freePassphrase) == null -> "Приватный ключ не читается или неверен пароль от ключа."
+            freeUseKey && freeKey.isNotBlank() && u != "root" && freePassword.isEmpty() -> "Пользователь «$u» не root: введите пароль для sudo."
+            else -> null
+        }
+    }
+
+    /** SSH с данными из формы; null — пароль и ключ не введены (тогда берутся сохранённые для этого адреса). */
+    private fun freeCfg(ip: String): SshConfig? {
+        val key = if (freeUseKey) freeKey else ""
+        if (key.isBlank() && freePassword.isEmpty()) return null
+        return SshConfig(ip, freePort.trim().toInt(), freeUser.trim(), freePassword, key, if (freeUseKey) freePassphrase else "")
+    }
+
+    private fun clearFreeForm() {
+        importHost = ""; freePort = "22"; freeUser = "root"; freeUseKey = false
+        freePassword = ""; freeKey = ""; freePassphrase = ""
+    }
+
+    /**
+     * Добавляет любой сервер по IP в «Свободные серверы» (для переезда на него): входит по SSH с паролем или ключом,
+     * читает сведения о сервере и запоминает данные входа. Сам сервер не изменяется, на Главную не попадает.
+     */
+    fun addFreeServer(onDone: () -> Unit = {}) {
+        freeError = null
+        importError = null
+        val h = importHost.trim().lowercase()
+        val problem = when {
+            h.isEmpty() || !HOSTNAME.matches(h) -> "Укажите IP-адрес сервера, например 203.0.113.10."
+            else -> freeLoginProblem()
+        }
+        if (problem != null) { freeError = problem; return }
+        if (running) return
+        freeBusy = true
+        launchTask(plusLog, clear = false) {
+            try {
+                val ip = if (IPV4.matches(h)) h else resolveIpv4(h) ?: throw IllegalStateException("Не удалось узнать IP-адрес $h.")
+                stableProfiles.firstOrNull { it.vps?.ip == ip }?.let {
+                    throw IllegalStateException("На $ip уже работает сервер Главной ${it.fqdn} — свободным он быть не может.")
+                }
+                val cfg = freeCfg(ip) ?: sshFor(ip, plusLog).first
+                addLog(plusLog, "Свободный сервер: подключаюсь к ${cfg.user}@$ip:${cfg.port}…")
+                val facts = java.util.concurrent.ConcurrentHashMap<String, String>()
+                val code = runner.runScript(cfg, Scripts.serverFacts()) { line ->
+                    if (line.startsWith(Scripts.FACT_MARKER)) {
+                        val f = line.removePrefix(Scripts.FACT_MARKER).split("|", limit = 2)
+                        if (f.size == 2) facts[f[0]] = f[1].trim()
+                    } else if (!Links.isMarker(line)) postLog(plusLog, line)
+                }
+                if (code != 0) throw IllegalStateException("Сервер не дал прав root (код $code) — проверьте пользователя и пароль для sudo.")
+                rememberProfile(cfg)
+                val vm = opVms.firstOrNull { it.ip == ip }
+                val names = mapOf("hy2" to "Hysteria2", "vless" to "VLESS", "awg" to Awg.TITLE, "tg" to "Telegram")
+                val srv = CombineServer(
+                    vpsId = vm?.id.orEmpty(), ip = ip, fqdn = if (IPV4.matches(h)) "" else h,
+                    hostname = facts["host"].orEmpty().ifEmpty { vm?.hostname.orEmpty() },
+                    protocols = facts["protocols"].orEmpty().split(" ").mapNotNull { names[it] },
+                    secured = facts["pwauth"] == "no", origin = CombineServer.ORIGIN_MANUAL,
+                )
+                rememberCombineServer(srv)
+                plusTargetId = srv.key
+                addLog(plusLog, "✓ Сервер $ip добавлен в «Свободные серверы»" + facts["os"]?.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() +
+                    ". Переехать на него: «Заменить сервер» → «Свободный сервер».")
+                if (srv.protocols.isNotEmpty()) addLog(plusLog, "На нём уже стоят: ${srv.protocols.joinToString()} — при переезде они будут заменены протоколами вашего сервера.")
+                if (facts["apt"] == "no") addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: на сервере нет apt (не Debian/Ubuntu) — часть протоколов может не установиться.")
+                if (facts["systemd"] == "no") addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: на сервере нет systemd — протоколы на него не установятся.")
+                clearFreeForm()
+                onDone()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                freeError = e.message ?: e.javaClass.simpleName
+                addLog(plusLog, "Свободный сервер не добавлен: ${freeError}")
+            } finally {
+                freeBusy = false
+            }
+        }
+    }
 
     /**
      * Делает уже работающий сервер (например, сделанный комбайном до 1.7) сервером с постоянными ссылками:
@@ -2448,13 +2569,15 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             stableProfiles.any { it.fqdn == fqdn } -> { importError = "$fqdn уже есть на Главной."; return }
             !HOSTNAME.matches(h) -> { importError = "Адрес сервера указан неверно."; return }
         }
+        freeLoginProblem()?.let { importError = it; return }
         onDone()
         plusNew = false
         launchTask(plusLog) {
             plusLinks.clear(); plusSteps.clear(); plusRunTarget = null
             val ip = if (IPV4.matches(h)) h else resolveIpv4(h) ?: throw IllegalStateException("Не удалось узнать IP-адрес $h.")
             addLog(plusLog, "Подключаюсь к $ip и читаю настройки протоколов…")
-            val (ssh, _) = sshFor(ip, plusLog)
+            // вход: данные из формы, а если они не введены — сохранённые для этого адреса
+            val ssh = freeCfg(ip) ?: sshFor(ip, plusLog).first
             val markers = java.util.Collections.synchronizedList(mutableListOf<String>())
             runner.runScript(ssh, Scripts.exportProfile()) { if (Links.isMarker(it)) markers += it else postLog(plusLog, it) }
             runner.runScript(ssh, Scripts.exportCert(fqdn, waits = 1)) { if (Links.isMarker(it)) markers += it else postLog(plusLog, it) }
@@ -2474,7 +2597,8 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
             if (vm == null) addLog(plusLog, "VPS с адресом $ip не найден в загруженном списке OneProvider — после переезда старый VPS удалите вручную во вкладке «VPS/DNS».")
             plusLinks.addAll(p.links())
             addLog(plusLog, "Ссылки сервера — ниже. При переносе на другой VPS они не изменятся.")
-            importFqdn = ""; importHost = ""
+            importFqdn = ""
+            clearFreeForm()
         }
     }
 
@@ -2488,6 +2612,139 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     fun plusStop() {
         plusJob?.cancel()
+    }
+
+    // ---------- Откат незавершённого переезда ----------
+
+    /** Незавершённый переезд, который можно откатить (null — нет). Переживает перезапуск приложения. */
+    var plusRollback by mutableStateOf(MoveRollback.fromJson(secrets.get(ROLLBACK_KEY))?.takeIf { rb -> stableProfiles.any { it.fqdn == rb.fqdn } })
+        private set
+
+    private fun saveRollback(rb: MoveRollback?) {
+        plusRollback = rb
+        secrets.put(ROLLBACK_KEY, rb?.toJson().orEmpty())
+    }
+
+    /** Тестам: задать состояние отката и адреса поддельных API. */
+    internal fun setRollbackForTest(rb: MoveRollback?) = saveRollback(rb)
+    internal var testOpUrl: String? = null
+    internal var testNcUrl: String? = null
+
+    private fun opApi(): OneProviderClient =
+        testOpUrl?.let { OneProviderClient(opApiKey.trim(), opClientKey.trim(), it) } ?: OneProviderClient(opApiKey.trim(), opClientKey.trim())
+
+    private fun ncApi(user: String, token: String): NameComClient =
+        testNcUrl?.let { NameComClient(user, token, it) } ?: NameComClient(user, token)
+
+    /**
+     * После ошибки или остановки переезда запоминает, как вернуть всё назад. Для нового сервера (не переезд)
+     * и когда ничего ещё не изменено — ничего не делает.
+     */
+    private fun offerRollback(
+        before: StableProfile?, isNew: Boolean, oldVps: ProfileVps?, created: OpCreated?, existing: CombineServer?,
+        newIp: String, current: PlusStep,
+    ) {
+        if (isNew || before == null || oldVps == null || oldVps.ip.isBlank()) return
+        val now = stableProfiles.firstOrNull { it.fqdn == before.fqdn } ?: return
+        val dns = current.ordinal >= PlusStep.DNS.ordinal
+        val moved = now.vps?.ip != oldVps.ip
+        if (created == null && !moved && !dns) return
+        // повторный переезд после ошибки без отката: «настоящий» прежний сервер — из первого состояния
+        val prev = plusRollback?.takeIf { it.fqdn == before.fqdn }
+        if (prev != null && oldVps.ip != prev.oldIp) {
+            // сервер прошлой неудачной попытки не теряем: он остаётся в свободных
+            rememberCombineServer(
+                CombineServer(
+                    vpsId = oldVps.id, ip = oldVps.ip, fqdn = "", hostname = oldVps.hostname,
+                    origin = if (oldVps.id.isEmpty()) CombineServer.ORIGIN_MANUAL else CombineServer.ORIGIN_COMBINE,
+                ),
+            )
+        }
+        val rb = MoveRollback(
+            fqdn = before.fqdn, before = prev?.before ?: before.toJson(), oldIp = prev?.oldIp ?: oldVps.ip,
+            newId = created?.id ?: existing?.vpsId.orEmpty(),
+            newIp = newIp.ifEmpty { if (moved) now.vps?.ip.orEmpty() else "" },
+            newHost = created?.hostname ?: existing?.hostname.orEmpty(),
+            bought = created != null, dnsChanged = dns || prev?.dnsChanged == true,
+        )
+        saveRollback(rb)
+        addLog(plusLog, "Переезд можно откатить: «Откатить переезд» ниже вернёт ссылки ${rb.fqdn} на прежний сервер ${rb.oldIp}.")
+    }
+
+    /** Убирает предложение отката, ничего не меняя (сервер остаётся в текущем состоянии). */
+    fun plusRollbackDismiss() {
+        if (running) return
+        plusRollback?.let { addLog(plusLog, "Откат переезда ${it.fqdn} скрыт. Прежний сервер ${it.oldIp} не тронут.") }
+        saveRollback(null)
+    }
+
+    /**
+     * Откатывает незавершённый переезд: A-запись и профиль возвращаются на прежний сервер (он при переезде не менялся).
+     * Купленный в этом переезде VPS удаляется ([deleteNew]) или остаётся в «Свободных серверах».
+     * Ошибка name.com или OneProvider состояние не теряет — откат можно повторить.
+     */
+    fun plusRollbackRun(deleteNew: Boolean) {
+        val rb = plusRollback ?: return
+        if (running) return
+        plusError = null
+        val before = runCatching { StableProfile.fromJson(rb.before) }.getOrNull()
+        if (before == null || stableProfiles.none { it.fqdn == rb.fqdn }) { saveRollback(null); return }
+        if (rb.dnsChanged && (ncUser.isBlank() || ncToken.isBlank())) {
+            plusError = "Для отката нужны логин и API-токен name.com (карточка «Аккаунты»): A-запись возвращается на прежний адрес."; return
+        }
+        if (deleteNew && rb.bought && (opApiKey.isBlank() || opClientKey.isBlank())) {
+            plusError = "Чтобы удалить новый VPS, нужны ключи OneProvider (карточка «Аккаунты»)."; return
+        }
+        launchTask(plusLog, clear = false) {
+            addLog(plusLog, "")
+            addLog(plusLog, "ОТКАТ ПЕРЕЕЗДА ${rb.fqdn}: возвращаю прежний сервер ${rb.oldIp}")
+            // 1. DNS — первым: при ошибке ничего не потеряно, откат можно повторить
+            if (rb.dnsChanged) {
+                val ttlNum = ttl.trim().toIntOrNull()?.coerceIn(300, 86400) ?: 300
+                setupDnsRecord(
+                    rb.oldIp, DnsPlan(ncUser.trim(), ncToken.trim(), before.zone, before.subdomain, ttlNum),
+                    allowOverwrite = true, target = plusLog, dropAaaa = true,
+                )
+            } else {
+                addLog(plusLog, "A-запись ${rb.fqdn} не менялась — DNS не трогаю.")
+            }
+            // 2. профиль
+            storeStable(before)
+            addLog(plusLog, "✓ Профиль ${rb.fqdn} снова работает с сервером ${rb.oldIp}.")
+            // 3. новый сервер
+            if (rb.bought) {
+                var keep = true
+                if (deleteNew && rb.newId.isNotEmpty()) {
+                    val r = opApi().destroyVm(rb.newId, confirmClose = false)
+                    when {
+                        r.destroyed -> {
+                            keep = false
+                            dropCombineServer(rb.newId)
+                            addLog(plusLog, "✓ Новый VPS ${rb.newHost.ifEmpty { rb.newId }} удалён в OneProvider.")
+                        }
+                        r.overageCost.isNotEmpty() ->
+                            addLog(plusLog, "! Новый VPS не удалён: перерасход трафика ${r.overageGb} ГБ, доплата ${r.overageCost}. Удалите его во вкладке «VPS/DNS» — там будет вопрос об оплате.")
+                        else -> addLog(plusLog, "✗ Новый VPS не удалён: ${r.message}. Удалите его во вкладке «VPS/DNS».")
+                    }
+                }
+                if (keep && rb.newIp.isNotEmpty()) {
+                    rememberCombineServer(
+                        CombineServer(vpsId = rb.newId, ip = rb.newIp, fqdn = "", hostname = rb.newHost, origin = CombineServer.ORIGIN_COMBINE),
+                    )
+                    addLog(plusLog, "Новый VPS ${rb.newIp} оставлен в «Свободных серверах» — на него можно переехать без покупки. Он оплачивается; удалить — во вкладке «VPS/DNS».")
+                } else if (keep) {
+                    addLog(plusLog, "Новый VPS ${rb.newHost.ifEmpty { rb.newId }} остался в аккаунте OneProvider — удалите его во вкладке «VPS/DNS», если он не нужен.")
+                }
+            } else if (rb.newIp.isNotEmpty()) {
+                addLog(plusLog, "Свободный сервер ${rb.newIp} остался в списке; его протоколы могли быть частично заменены.")
+            }
+            saveRollback(null)
+            plusSteps.clear(); plusOldVps = null; plusOldOverage = null; plusRunTarget = null
+            plusLinks.clear(); plusLinks.addAll(before.links())
+            if (accessTarget == rb.fqdn) loadAccess(before)
+            addLog(plusLog, "✓ Откат выполнен: ссылки ${rb.fqdn} снова ведут на ${rb.oldIp}" +
+                (if (rb.dnsChanged) " (DNS обновится в течение нескольких минут)" else "") + ". Нажмите «Проверить», чтобы убедиться, что сервер отвечает.")
+        }
     }
 
     /**
@@ -2536,7 +2793,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         // режим RandomTrailers меняется только по выбору пользователя (меняет и ссылку AmneziaWG)
         val awgNow = profile.awg
         val trailersChanged = withAwg && awgNow != null && awgNow.trailers != plusTrailers
-        if (trailersChanged && awgNow != null) profile = profile.copy(awg = awgNow.copy(trailers = plusTrailers))
+        if (trailersChanged) profile = profile.copy(awg = awgNow?.copy(trailers = plusTrailers))
         // XHTTP: путь постоянный (выведен из UUID), поэтому включение и выключение ссылку не портят; без VLESS не работает
         val withXhttp = plusXhttp && profile.vlessOn
         if (profile.awgOn != withAwg || profile.xhttpOn != withXhttp || profile !== before) {
@@ -2557,6 +2814,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         plusRunTarget = existing
         var current = PlusStep.CREATE
         var created: OpCreated? = null
+        var newIpSeen = existing?.ip.orEmpty()
 
         plusJob = scope.launch {
             fun step(s: PlusStep) {
@@ -2618,7 +2876,10 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     ip = vmIp
                     newId = c.id
                     rootPass = c.password
+                    newIpSeen = ip
                     addLog(plusLog, "IPv4: $ip")
+                    // пароль root нового VPS сохраняем сразу: если переезд прервётся, сервер останется доступным (свободный сервер)
+                    if (c.password.isNotEmpty()) rememberProfile(SshConfig(ip, 22, "root", c.password, "", ""))
                     // новый VPS сразу запоминаем в профиле — старый остаётся в oldVps
                     profile = profile.copy(vps = ProfileVps(c.id, ip, c.hostname, size.trafficGb?.takeIf { it.isFinite() }), movedAt = System.currentTimeMillis())
                     savePlusProfile(profile)
@@ -2650,7 +2911,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
                     // 2. Доступ по SSH
                     step(PlusStep.BOOT)
-                    waitForSsh(ip, plusLog, 2 * 60_000, null, null)
+                    waitForSsh(ip, plusLog, 2 * 60_000, null, null, savedServer(ip).port)
                     val pair = existingSsh(existing, plusLog)
                     ssh = pair.first
                     keyCfg = pair.second
@@ -2720,24 +2981,51 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                 // 10. Ссылки — те же самые
                 step(PlusStep.LINK)
                 plusLinks.addAll(profile.links())
-                host = ip; sshPort = "22"; user = "root"
-                useKey = ssh.privateKey.isNotBlank()
-                if (rootPass.isNotEmpty()) password = rootPass
-                persist()
+                // данные входа нового сервера уже сохранены (rememberProfile). Поля «Доступа по SSH» напрямую не меняем:
+                // там может быть открыт другой сервер, и «Применить» записал бы ему чужой IP. Перечитываем, только если открыт этот.
+                if (accessTarget == profile.fqdn) loadAccess(profile)
                 done(PlusStep.LINK)
                 addLog(plusLog, "")
                 addLog(plusLog, if (isNew) "Готово! Сервер ${profile.fqdn} работает. Раздайте ссылки ниже — при смене VPS они не изменятся."
                     else "Готово! Сервер ${profile.fqdn} переехал на $ip. Ссылки прежние — клиентам ничего менять не нужно.")
 
+                // переезд удался — откат прошлой неудачной попытки больше не нужен; её «настоящий» прежний сервер не теряем
+                plusRollback?.takeIf { it.fqdn == profile.fqdn }?.let { rb ->
+                    if (rb.oldIp != ip && rb.oldIp != oldVps?.ip) {
+                        val was = runCatching { StableProfile.fromJson(rb.before) }.getOrNull()
+                        rememberCombineServer(
+                            CombineServer(
+                                vpsId = was?.vps?.id.orEmpty(), ip = rb.oldIp, fqdn = "", hostname = was?.vps?.hostname.orEmpty(),
+                                protocols = was?.links()?.map { l -> l.title }.orEmpty(),
+                                origin = if (was?.vps?.id.isNullOrEmpty()) CombineServer.ORIGIN_MANUAL else CombineServer.ORIGIN_PROFILE,
+                            ),
+                        )
+                        addLog(plusLog, "Сервер ${rb.oldIp}, на котором ${profile.fqdn} работал до прерванного переезда, остался в «Свободных серверах». " +
+                            "Если он не нужен, удалите его VPS во вкладке «VPS/DNS».")
+                    }
+                    saveRollback(null)
+                }
+
                 // 10. Старый VPS
                 if (existing != null) {
                     // сервер стал основным — в списке он больше не нужен
-                    dropCombineServer(existing.vpsId)
+                    dropCombineServer(existing.key)
                     if (!profile.awgOn && existing.protocols.contains(Awg.TITLE)) {
                         addLog(plusLog, "На сервере остался прежний AmneziaWG со своей ссылкой — удалить его можно в блоке «Протоколы» на Главной.")
                     }
                 }
-                if (oldVps != null && oldVps.id != newId) {
+                if (oldVps != null && oldVps.ip != ip && oldVps.id.isEmpty()) {
+                    // прежний сервер не из OneProvider (добавлен вручную): удалить его через API нельзя — остаётся свободным
+                    rememberCombineServer(
+                        CombineServer(
+                            vpsId = "", ip = oldVps.ip, fqdn = "", hostname = oldVps.hostname,
+                            protocols = profile.links().map { l -> l.title }, secured = false, origin = CombineServer.ORIGIN_MANUAL,
+                        ),
+                    )
+                    done(PlusStep.OLD_VPS, StepStatus.SKIPPED)
+                    addLog(plusLog, "Прежний сервер ${oldVps.ip} добавлен вручную — приложение его не удаляет. Он остался в списке " +
+                        "«Заменить сервер → Свободный сервер»: на него можно вернуться.")
+                } else if (oldVps != null && oldVps.ip != ip && oldVps.id != newId) {
                     plusSteps[PlusStep.OLD_VPS] = StepStatus.RUNNING
                     addLog(plusLog, "Старый VPS ${oldVps.hostname.ifEmpty { oldVps.id }} (${oldVps.ip}) больше не нужен — подтвердите удаление.")
                     plusOldVps = oldVps
@@ -2748,10 +3036,12 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                 plusSteps[current] = StepStatus.FAILED
                 addLog(plusLog, "Остановлено пользователем.")
                 plusLeftovers(created, oldVps)
+                offerRollback(before, isNew, oldVps, created, existing, newIpSeen, current)
             } catch (e: Exception) {
                 plusSteps[current] = StepStatus.FAILED
                 addLog(plusLog, "ОШИБКА: ${e.message ?: e.javaClass.simpleName}")
                 plusLeftovers(created, oldVps)
+                offerRollback(before, isNew, oldVps, created, existing, newIpSeen, current)
             } finally {
                 running = false
                 plusActive = false
@@ -3177,6 +3467,9 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     private var balanceTried = false
 
+    /** Тестам: показать баланс без обращения к OneProvider. */
+    internal fun setBalanceForTest(b: String?) { opBalance = b }
+
     fun loadBalance() {
         if (balanceTried) return
         val client = opClient() ?: return
@@ -3373,7 +3666,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
 
     fun plusKeepOld() {
         plusOldVps?.let {
-            addLog(plusLog, "Старый VPS ${it.hostname.ifEmpty { it.id }} оставлен — удалить можно на вкладке OneProvider. " +
+            addLog(plusLog, "Старый VPS ${it.hostname.ifEmpty { it.id }} оставлен — удалить можно во вкладке «VPS/DNS». " +
                 "Он добавлен в список «Заменить сервер → Свободный сервер»: на него можно вернуться без покупки VPS.")
             val p = plusProfile
             rememberCombineServer(

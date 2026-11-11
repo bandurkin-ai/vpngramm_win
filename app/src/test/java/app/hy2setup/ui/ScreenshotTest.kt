@@ -121,6 +121,66 @@ class ScreenshotTest {
         com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/3-tools-collapsed-light.png")
     }
 
+    /** Главная после неудачного переезда: карточка «Переезд не завершён» и «$» у баланса. */
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test
+    @Config(qualifiers = "w411dp-h1900dp-xxhdpi")
+    fun homeRollbackCard() {
+        val model = vm(0).apply {
+            val before = plusProfile!!
+            plusProfile = before.copy(
+                vps = ProfileVps("999", "198.51.100.9", "vpn-new"), trafficGb = 12.3, checkAt = System.currentTimeMillis(),
+                status = mapOf("VLESS" to true),
+            )
+            setBalanceForTest("17.42")
+            setRollbackForTest(
+                app.hy2setup.MoveRollback(
+                    fqdn = "vpn.example.org", before = before.toJson(), oldIp = "203.0.113.10",
+                    newId = "999", newIp = "198.51.100.9", newHost = "vpn-new", bought = true, dnsChanged = true,
+                ),
+            )
+            plusLog.clear()
+            plusLog += listOf("▶ Hysteria2 + Salamander (ключи профиля)", "ОШИБКА: Установка Hysteria2 завершилась с ошибкой (код 1).")
+        }
+        compose.setContent { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
+        compose.onNodeWithText("Переезд vpn.example.org не завершён").assertExists()
+        compose.onNodeWithText("Баланс OneProvider: $17.42").assertExists()
+        com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/1-home-rollback-light.png")
+        // окно подтверждения: куплен новый VPS — выбор «удалить» или «оставить»
+        compose.onNodeWithText("Откатить переезд").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Откатить и удалить новый VPS").assertExists()
+        compose.onNodeWithText("Откатить, VPS оставить").assertExists()
+        com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/1-home-rollback-dialog-light.png")
+    }
+
+    /** «Свободный сервер»: сервер, добавленный вручную, и форма «Добавить сервер по IP». */
+    @OptIn(com.github.takahirom.roborazzi.ExperimentalRoborazziApi::class)
+    @Test
+    @Config(qualifiers = "w411dp-h1700dp-xxhdpi")
+    fun freeServerForm() {
+        val model = vm(0).apply {
+            combineServers += CombineServer("", "198.51.100.7", "", hostname = "my-vps", protocols = listOf("VLESS"), origin = CombineServer.ORIGIN_MANUAL)
+            plusTargetId = "ip:198.51.100.7"
+        }
+        compose.setContent {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(16.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { CombineServerList(model, model.plusProfile!!) }
+                }
+            }
+        }
+        compose.onNodeWithText("добавлен вручную", substring = true).assertExists()
+        compose.onNodeWithText("Сверить с OneProvider").assertDoesNotExist()   // ручной сервер с OneProvider не сверяется
+        compose.onNodeWithText("Добавить сервер по IP").performClick()
+        compose.waitForIdle()
+        compose.onNodeWithText("Добавить в свободные серверы").assertExists()
+        com.github.takahirom.roborazzi.captureScreenRoboImage("build/screens/1-home-freeserver-form-light.png")
+    }
+
     @Test fun cloudLight() = shot("2-cloud", 1, false)
     @Test fun cloudDark() = shot("2-cloud", 1, true)
     @Test fun toolsLight() = shot("3-tools", 2, false)
@@ -413,9 +473,28 @@ class ScreenshotTest {
         captureRoboImage("build/screens/1-home-two-light.png") { Hy2Theme(dark = false, dynamic = false) { AppRoot(model) } }
     }
 
-    @Test fun addServerForm() {
+    @Test
+    @Config(qualifiers = "w411dp-h1300dp-xxhdpi")
+    fun addServerForm() {
         val model = vm(0).apply { importFqdn = "vpn2.example.org"; importHost = "203.0.113.66" }
         captureRoboImage("build/screens/1-home-add-light.png") {
+            Hy2Theme(dark = false, dynamic = false) {
+                androidx.compose.material3.Surface {
+                    androidx.compose.foundation.layout.Column(
+                        androidx.compose.ui.Modifier.padding(20.dp),
+                        verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(12.dp),
+                    ) { AddServerForm(model) {} }
+                }
+            }
+        }
+    }
+
+    /** «Добавить работающий сервер» без домена: сервер пойдёт в «Свободные серверы». */
+    @Test
+    @Config(qualifiers = "w411dp-h1300dp-xxhdpi")
+    fun addServerFormFree() {
+        val model = vm(0).apply { importFqdn = ""; importHost = "198.51.100.7"; freePassword = "secret" }
+        captureRoboImage("build/screens/1-home-add-free-light.png") {
             Hy2Theme(dark = false, dynamic = false) {
                 androidx.compose.material3.Surface {
                     androidx.compose.foundation.layout.Column(

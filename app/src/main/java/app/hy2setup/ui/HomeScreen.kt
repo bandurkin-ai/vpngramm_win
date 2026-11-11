@@ -118,7 +118,7 @@ fun HomeScreen(vm: MainViewModel) {
                 ExtendedFloatingActionButton(
                     onClick = { haptic.performHapticFeedback(HapticFeedbackType.LongPress); vm.plusNew = false; orderSheet = true },
                     icon = { Icon(AppIcons.Rocket, null) },
-                    text = { Text(if (profile == null) "Создать сервер" else "Заменить сервер") },
+                    text = { Text("Заменить сервер") },
                     expanded = true,
                 )
             }
@@ -152,6 +152,8 @@ fun HomeScreen(vm: MainViewModel) {
             }
         }
         ErrorText(vm.plusError)
+        // переезд упал или остановлен — можно вернуть всё на прежний сервер
+        if (!vm.plusActive) RollbackCard(vm)
         if (vm.plusAccessProblem && profile != null && !vm.running) {
             FilledTonalButton(onClick = { vm.editAccess(profile.fqdn) }, modifier = Modifier.fillMaxWidth()) {
                 Icon(AppIcons.Terminal, null); Spacer(Modifier.width(8.dp)); Text("Исправить доступ по SSH")
@@ -258,20 +260,34 @@ private fun AddServerSheet(vm: MainViewModel, onDismiss: () -> Unit) {
 
 @Composable
 internal fun AddServerForm(vm: MainViewModel, onDone: () -> Unit) {
+    // без домена сервер идёт в «Свободные серверы», с доменом — на Главную
+    val free = vm.importFqdn.isBlank()
     Text("Добавить работающий сервер", style = MaterialTheme.typography.titleLarge)
     Hint(
-        "Например, сервер, поставленный вручную или прежней версией приложения. Приложение по SSH прочитает его пароли и ключи (сервер не изменяется) — " +
-            "и его можно будет переносить на другой VPS с теми же ссылками.",
+        "С доменом — сервер попадёт на Главную: приложение по SSH прочитает его пароли и ключи, и нынешние ссылки станут постоянными. " +
+            "Только IP, без домена — сервер попадёт в «Свободные серверы»: на него можно перевести любой сервер Главной " +
+            "(«Заменить сервер» → «Свободный сервер»). При добавлении сервер не изменяется.",
     )
-    AppField("Домен сервера (например, vpn2.example.org)", vm.importFqdn, { vm.importFqdn = it }, keyboard = KeyboardType.Uri, enabled = !vm.running)
-    AppField("IP-адрес (если пусто — по домену)", vm.importHost, { vm.importHost = it }, keyboard = KeyboardType.Uri, enabled = !vm.running)
-    Hint(
-        "Вход: сохранённый пароль root этого сервера или приватный ключ из «Сервер → Доступ по SSH». " +
-            "Если сервер ещё не открывали в приложении, впишите его адрес и пароль в «Доступе к серверам» (Инструменты).",
+    AppField("Домен сервера (необязательно, например vpn2.example.org)", vm.importFqdn, { vm.importFqdn = it }, keyboard = KeyboardType.Uri, enabled = !vm.running)
+    AppField(
+        if (free) "IP-адрес сервера" else "IP-адрес (если пусто — по домену)", vm.importHost, { vm.importHost = it },
+        keyboard = KeyboardType.Uri, enabled = !vm.running,
     )
+    ServerLoginFields(vm)
+    Hint("Если пароль и ключ не указаны, берутся сохранённые для этого адреса («Инструменты → Доступ по SSH»).")
     ErrorText(vm.importError)
-    Button(onClick = { vm.importServer(onDone) }, enabled = !vm.running, modifier = Modifier.fillMaxWidth().height(56.dp)) {
-        Icon(AppIcons.Add, null); Spacer(Modifier.width(10.dp)); Text("Добавить")
+    ErrorText(vm.freeError)
+    Button(
+        onClick = { if (free) vm.addFreeServer(onDone) else vm.importServer(onDone) },
+        enabled = !vm.running, modifier = Modifier.fillMaxWidth().height(56.dp),
+    ) {
+        if (vm.freeBusy) {
+            androidx.compose.material3.CircularProgressIndicator(Modifier.size(20.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(10.dp)); Text("Проверяю сервер…")
+        } else {
+            Icon(AppIcons.Add, null); Spacer(Modifier.width(10.dp))
+            Text(if (free) "Добавить в свободные серверы" else "Добавить на Главную")
+        }
     }
 }
 
@@ -360,7 +376,7 @@ private fun NewServerSheet(vm: MainViewModel, profile: StableProfile?, onDismiss
                         mode = m
                         if (m == "new") vm.plusTargetId = ""
                         else {
-                            if (vm.plusTarget == null) vm.plusTargets.firstOrNull()?.let { vm.plusTargetId = it.vpsId }
+                            if (vm.plusTarget == null) vm.plusTargets.firstOrNull()?.let { vm.plusTargetId = it.key }
                             // сверяем список с аккаунтом: удалённые VPS будут помечены
                             if (!vm.opLoaded && vm.opApiKey.isNotBlank() && vm.opClientKey.isNotBlank()) vm.opLoadVms()
                         }
@@ -437,6 +453,7 @@ private fun NewServerSheet(vm: MainViewModel, profile: StableProfile?, onDismiss
 internal fun CombineServerList(vm: MainViewModel, profile: StableProfile) {
     val list = vm.plusTargets
     var forget by remember { mutableStateOf<CombineServer?>(null) }
+    var adding by remember { mutableStateOf(false) }
     val df = remember { SimpleDateFormat("dd.MM.yyyy", Locale("ru")) }
     if (list.isEmpty()) {
         Card(
@@ -446,20 +463,20 @@ internal fun CombineServerList(vm: MainViewModel, profile: StableProfile) {
             Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
                 Text("Свободных серверов пока нет", style = MaterialTheme.typography.titleSmall)
                 Text(
-                    "Здесь появляются VPS, которые вы оставили после переезда (кнопка «Оставить»). Серверы, на которых работают " +
-                        "другие серверы Главной, сюда не попадают — иначе их ссылки сломались бы. Ссылки ${profile.fqdn} можно перенести на новый VPS.",
+                    "Здесь появляются VPS, которые вы оставили после переезда (кнопка «Оставить»), и серверы, добавленные по IP. " +
+                        "Серверы, на которых работают другие серверы Главной, сюда не попадают — иначе их ссылки сломались бы. " +
+                        "Добавьте любой сервер кнопкой ниже — и ссылки ${profile.fqdn} можно будет перенести на него.",
                     style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
-        return
     }
-    Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (list.isNotEmpty()) Column(Modifier.selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         list.forEach { srv ->
-            val chosen = vm.plusTargetId == srv.vpsId
+            val chosen = vm.plusTargetId == srv.key
             val alive = vm.combineServerAlive(srv)
             Card(
-                modifier = Modifier.fillMaxWidth().selectable(chosen, enabled = !vm.running, role = Role.RadioButton) { vm.plusTargetId = srv.vpsId },
+                modifier = Modifier.fillMaxWidth().selectable(chosen, enabled = !vm.running, role = Role.RadioButton) { vm.plusTargetId = srv.key },
                 shape = MaterialTheme.shapes.large,
                 colors = CardDefaults.cardColors(
                     containerColor = if (chosen) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surfaceContainerHigh,
@@ -476,6 +493,7 @@ internal fun CombineServerList(vm: MainViewModel, profile: StableProfile) {
                         )
                         val tags = listOfNotNull(
                             "прежний сервер профиля".takeIf { srv.origin == CombineServer.ORIGIN_PROFILE },
+                            "добавлен вручную".takeIf { srv.origin == CombineServer.ORIGIN_MANUAL },
                             srv.protocols.joinToString().takeIf { it.isNotEmpty() },
                             "вход по ключу".takeIf { srv.secured },
                         )
@@ -491,15 +509,33 @@ internal fun CombineServerList(vm: MainViewModel, profile: StableProfile) {
             }
         }
     }
-    if (vm.opApiKey.isNotBlank()) {
+    if (vm.opApiKey.isNotBlank() && list.any { !it.manual }) {
         androidx.compose.material3.TextButton(onClick = vm::opLoadVms, enabled = !vm.running) {
             Icon(AppIcons.Refresh, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Сверить с OneProvider")
+        }
+    }
+    // любой сервер по IP и паролю или SSH-ключу — в свободные
+    if (!adding) {
+        androidx.compose.material3.OutlinedButton(onClick = { adding = true; vm.freeError = null }, enabled = !vm.running, modifier = Modifier.fillMaxWidth()) {
+            Icon(AppIcons.Add, null, Modifier.size(18.dp)); Spacer(Modifier.width(8.dp)); Text("Добавить сервер по IP")
+        }
+    } else {
+        Card(
+            Modifier.fillMaxWidth(), shape = MaterialTheme.shapes.large,
+            colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+        ) {
+            Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                Text("Добавить сервер по IP", style = MaterialTheme.typography.titleSmall)
+                FreeServerForm(vm) { adding = false }
+                androidx.compose.material3.TextButton(onClick = { adding = false }, enabled = !vm.running) { Text("Отмена") }
+            }
         }
     }
     forget?.let { srv ->
         ConfirmDialog(
             "Убрать из списка?",
-            "${srv.title} (${srv.ip}) пропадёт из этого списка. Сам VPS и его протоколы не изменятся — удалить VPS можно во вкладке «VPS/DNS».",
+            "${srv.title} (${srv.ip}) пропадёт из этого списка. Сам сервер и его протоколы не изменятся" +
+                (if (srv.manual) "." else " — удалить VPS можно во вкладке «VPS/DNS»."),
             "Убрать", onConfirm = { forget = null; vm.forgetCombineServer(srv) }, onDismiss = { forget = null },
         )
     }

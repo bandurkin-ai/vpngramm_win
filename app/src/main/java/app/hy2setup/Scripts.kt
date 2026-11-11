@@ -1092,6 +1092,28 @@ ${firewall()}
         return jobStart("awg", jobBody(body), "Установка AmneziaWG уже идёт")
     }
 
+    const val FACT_MARKER = "##FACT|"
+
+    /**
+     * Сведения о сервере для списка «Свободные серверы» (сервер не меняется): ОС, имя, отключён ли вход по паролю,
+     * какие протоколы стоят, есть ли apt. Строки вида «##FACT|ключ|значение».
+     */
+    fun serverFacts(): String = HEADER + "\n" + """
+        OS=${'$'}(. /etc/os-release 2>/dev/null; echo "${'$'}{PRETTY_NAME:-}")
+        echo "${FACT_MARKER}os|${'$'}{OS:-неизвестно}"
+        echo "${FACT_MARKER}host|${'$'}(hostname 2>/dev/null)"
+        PA=${'$'}( (sshd -T || /usr/sbin/sshd -T) 2>/dev/null | awk 'tolower(${'$'}1)=="passwordauthentication"{print ${'$'}2}' | head -1)
+        echo "${FACT_MARKER}pwauth|${'$'}{PA:-unknown}"
+        P=""
+        [ -f /etc/hysteria/config.yaml ] && P="${'$'}P hy2"
+        [ -f /usr/local/etc/xray/config.json ] && P="${'$'}P vless"
+        [ -f /etc/amnezia/amneziawg/awg0.conf ] && P="${'$'}P awg"
+        [ -f /etc/mtg.toml ] && P="${'$'}P tg"
+        echo "${FACT_MARKER}protocols|${'$'}(echo ${'$'}P)"
+        command -v apt-get >/dev/null 2>&1 && echo "${FACT_MARKER}apt|yes" || echo "${FACT_MARKER}apt|no"
+        command -v systemctl >/dev/null 2>&1 && echo "${FACT_MARKER}systemd|yes" || echo "${FACT_MARKER}systemd|no"
+    """.trimIndent()
+
     /** Проверка входа: печатает маркер. */
     fun ping(): String = HEADER + "\n" + "echo \"$PING_MARKER\""
 

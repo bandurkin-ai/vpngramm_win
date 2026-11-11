@@ -4,9 +4,9 @@ import org.json.JSONArray
 import org.json.JSONObject
 
 /**
- * Готовый сервер, который сделал комбайн (или прежний сервер профиля, оставленный при переезде).
- * На него можно перевести постоянные ссылки без покупки нового VPS. Пароль root и ключ лежат в SecretStore
- * под записью «root@ip:22» списка сохранённых серверов.
+ * Свободный сервер: прежний сервер профиля, оставленный при переезде, VPS, оставленный после отката, или любой сервер,
+ * добавленный вручную по IP. На него можно перевести постоянные ссылки без покупки нового VPS. Пароль и ключ лежат
+ * в SecretStore под записью «пользователь@ip:порт» списка сохранённых серверов («Доступ по SSH»).
  */
 data class CombineServer(
     val vpsId: String,
@@ -19,14 +19,21 @@ data class CombineServer(
     val protocols: List<String> = emptyList(),
     /** Включён вход только по ключу. */
     val secured: Boolean = false,
-    /** «combine» — сделан комбайном, «profile» — прежний сервер постоянных ссылок. */
+    /** «combine» — сделан комбайном, «profile» — прежний сервер постоянных ссылок, «manual» — добавлен вручную по IP. */
     val origin: String = ORIGIN_COMBINE,
 ) {
     val title: String get() = fqdn.ifEmpty { hostname.ifEmpty { ip } }
 
+    /** Ключ записи в списке: ID VPS в OneProvider, а у серверов без него (добавлены вручную) — IP. */
+    val key: String get() = vpsId.ifEmpty { "ip:$ip" }
+
+    /** Сервер не из OneProvider (или его ID неизвестен): сверять с аккаунтом и удалять через API нельзя. */
+    val manual: Boolean get() = origin == ORIGIN_MANUAL || vpsId.isEmpty()
+
     companion object {
         const val ORIGIN_COMBINE = "combine"
         const val ORIGIN_PROFILE = "profile"
+        const val ORIGIN_MANUAL = "manual"
     }
 }
 
@@ -49,7 +56,7 @@ object CombineServers {
                 val o = arr.getJSONObject(i)
                 val p = o.optJSONArray("protocols")
                 CombineServer(
-                    vpsId = o.getString("vpsId"), ip = o.getString("ip"), fqdn = o.optString("fqdn"),
+                    vpsId = o.optString("vpsId"), ip = o.getString("ip"), fqdn = o.optString("fqdn"),
                     hostname = o.optString("hostname"), location = o.optString("location"),
                     createdAt = o.optLong("createdAt", 0L),
                     protocols = if (p == null) emptyList() else (0 until p.length()).map { p.getString(it) },
@@ -61,7 +68,7 @@ object CombineServers {
         }
     }
 
-    /** Добавляет сервер (или заменяет запись с тем же VPS); свежие — первыми. */
+    /** Добавляет сервер (или заменяет запись с тем же VPS или IP); свежие — первыми. */
     fun upsert(list: List<CombineServer>, s: CombineServer): List<CombineServer> =
-        listOf(s) + list.filter { it.vpsId != s.vpsId && it.ip != s.ip }
+        listOf(s) + list.filter { it.key != s.key && it.ip != s.ip }
 }

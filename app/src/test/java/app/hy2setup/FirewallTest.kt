@@ -10,6 +10,9 @@ import java.nio.file.Files
 
 /** Защита сервера: файрвол vpngramm, fail2ban и строгие настройки SSH. Ничего не применяется к этой машине. */
 class FirewallTest {
+    /** Скрипты сервера — для Linux; на Windows («bash» там — другой) их проверяют только на Linux. */
+    private fun linuxOnly() = assumeTrue("скрипты сервера проверяются только на Linux", System.getProperty("os.name").orEmpty().startsWith("Linux"))
+
     private fun sh(vararg cmd: String, env: Map<String, String> = emptyMap(), input: String? = null): Pair<Int, String> {
         val pb = ProcessBuilder(*cmd).redirectErrorStream(true)
         pb.environment().putAll(env)
@@ -34,6 +37,7 @@ class FirewallTest {
 
     @Test
     fun rulesOpenOnlySshAndVpnPorts() {
+        linuxOnly()
         val (code, out) = sh("bash", script().path, "print", env = mapOf("FW_ROOT" to fakeRoot().path, "FW_SSH_PORTS" to "22"))
         assertEquals(out, 0, code)
         assertTrue(out, out.contains("policy drop;"))
@@ -44,6 +48,7 @@ class FirewallTest {
 
     @Test
     fun noVpnMeansOnlySsh() {
+        linuxOnly()
         val empty = Files.createTempDirectory("fwempty").toFile()
         val (code, out) = sh("bash", script().path, "print", env = mapOf("FW_ROOT" to empty.path, "FW_SSH_PORTS" to "2222"))
         assertEquals(0, code)
@@ -51,9 +56,27 @@ class FirewallTest {
         assertFalse(out, out.contains("udp dport {"))
     }
 
+    /** Сайт домена с подпиской Happ: когда Hysteria2 отдаёт его сама на :443, порт должен быть открыт; локальный адрес — нет. */
+    @Test
+    fun subscriptionSitePortIsOpen() {
+        linuxOnly()
+        fun tcp(listen: String): String {
+            val r = Files.createTempDirectory("fwsite").toFile()
+            File(r, "etc/hysteria").mkdirs()
+            File(r, "etc/hysteria/config.yaml").writeText("listen: :443\nacme:\n  domains:\n    - vpn.example.org\nmasquerade:\n  type: file\n  listenHTTPS: $listen\n")
+            val (code, out) = sh("bash", script().path, "print", env = mapOf("FW_ROOT" to r.path, "FW_SSH_PORTS" to "22"))
+            assertEquals(out, 0, code)
+            return out.lines().first { "tcp dport" in it }.trim()
+        }
+        assertEquals("tcp dport { 22, 80, 443 } accept", tcp(":443"))
+        assertEquals("tcp dport { 22, 80 } accept", tcp("127.0.0.1:8443"))
+        assertEquals("tcp dport { 22, 80, 8444 } accept", tcp("0.0.0.0:8444"))
+    }
+
     /** Синтаксис правил проверяет сам nftables (режим -c: только проверка, без применения). */
     @Test
     fun nftAcceptsRules() {
+        linuxOnly()
         assumeTrue("нет nft", File("/usr/sbin/nft").canExecute())
         val (_, rules) = sh("bash", script().path, "print", env = mapOf("FW_ROOT" to fakeRoot().path, "FW_SSH_PORTS" to "22"))
         val f = Files.createTempFile("rules", ".nft").toFile().apply { writeText(rules) }
@@ -64,6 +87,7 @@ class FirewallTest {
 
     @Test
     fun scriptsAreValidBash() {
+        linuxOnly()
         for (s in listOf(Scripts.firewallApply(), Scripts.firewallConfirm(), Scripts.fail2banInstall(), Scripts.disablePasswordAuth(), Scripts.fwScript)) {
             val (code, out) = sh("bash", "-n", input = s)
             assertEquals(out, 0, code)
@@ -85,6 +109,7 @@ class FirewallTest {
     /** Новые директивы понимает настоящий OpenSSH (sshd -t на временном конфиге). */
     @Test
     fun sshdAcceptsHardenedConfig() {
+        linuxOnly()
         val dir = System.getenv("SSH_TEST_DIR")
         assumeTrue("SSH_TEST_DIR не задан", dir != null && File("/usr/sbin/sshd").canExecute())
         val cfg = Files.createTempFile("sshd", ".conf").toFile()
