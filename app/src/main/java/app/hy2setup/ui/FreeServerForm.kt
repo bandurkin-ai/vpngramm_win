@@ -24,7 +24,7 @@ import app.hy2setup.MainViewModel
  */
 @Composable
 internal fun ServerLoginFields(vm: MainViewModel) {
-    val keyPicker = rememberOpenDoc { vm.freeLoadKeyFrom(it) }
+    val keyPicker = rememberOpenKeyDoc { vm.freeLoadKeyFrom(it) }
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         AppField("Порт", vm.freePort, { vm.freePort = it }, Modifier.weight(1f), KeyboardType.Number, enabled = !vm.running)
         AppField("Пользователь", vm.freeUser, { vm.freeUser = it }, Modifier.weight(2f), enabled = !vm.running)

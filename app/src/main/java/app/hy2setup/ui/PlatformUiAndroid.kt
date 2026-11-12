@@ -86,3 +86,7 @@ fun rememberAppVersion(): String {
     val ctx = LocalContext.current
     return remember { runCatching { ctx.packageManager.getPackageInfo(ctx.packageName, 0).versionName }.getOrNull() ?: "?" }
 }
+
+/** Выбор файла SSH-ключа: на Android — обычный выбор файла. */
+@androidx.compose.runtime.Composable
+fun rememberOpenKeyDoc(onPicked: (app.hy2setup.platform.Doc) -> Unit): () -> Unit = rememberOpenDoc(onPicked)

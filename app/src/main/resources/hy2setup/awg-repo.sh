@@ -20,16 +20,28 @@ awg_hosts_cleanup() {
     fi
 }
 
-# IPv4 имени PPA через DNS-over-HTTPS по IP-адресу (свой DNS сервера для этого не нужен)
+# IPv4 имени ($1, по умолчанию PPA) через DNS-over-HTTPS по IP-адресу (свой DNS сервера для этого не нужен)
 awg_doh_ip() {
-    local ip=""
-    ip=$(curl -fsS --max-time 10 -H 'accept: application/dns-json' "https://1.1.1.1/dns-query?name=$AWG_PPA_HOST&type=A" 2>/dev/null \
+    local h="${1:-$AWG_PPA_HOST}" ip=""
+    ip=$(curl -fsS --max-time 10 -H 'accept: application/dns-json' "https://1.1.1.1/dns-query?name=$h&type=A" 2>/dev/null \
         | grep -oE '"data": *"[0-9]+(\.[0-9]+){3}"' | head -1 | grep -oE '[0-9]+(\.[0-9]+){3}') || true
     if [ -z "$ip" ]; then
-        ip=$(curl -fsS --max-time 10 "https://8.8.8.8/resolve?name=$AWG_PPA_HOST&type=A" 2>/dev/null \
+        ip=$(curl -fsS --max-time 10 "https://8.8.8.8/resolve?name=$h&type=A" 2>/dev/null \
             | grep -oE '"data": *"[0-9]+(\.[0-9]+){3}"' | head -1 | grep -oE '[0-9]+(\.[0-9]+){3}') || true
     fi
     echo "$ip"
+}
+
+# если DNS сервера не разрешает имя $1 — временно прописать его адрес из DNS-over-HTTPS в hosts (0 — прописано)
+awg_hosts_pin() {
+    local h="$1" ip=""
+    getent ahostsv4 "$h" >/dev/null 2>&1 && return 1
+    echo "DNS сервера не разрешает $h — узнаю его адрес через DNS-over-HTTPS (1.1.1.1, 8.8.8.8)"
+    ip=$(awg_doh_ip "$h")
+    [ -n "$ip" ] || { echo "DNS-over-HTTPS тоже недоступен"; return 2; }
+    echo "$ip $h # vpngramm-tmp" >> "$AWG_HOSTS"
+    echo "Временно: $h → $ip (строка в $AWG_HOSTS уберётся после установки)"
+    return 0
 }
 
 # причина из вывода apt-get update (строка про PPA)
@@ -53,22 +65,16 @@ awg_repo_prepare() {
         sleep "$AWG_PAUSE"
         i=$((i + 1))
     done
-    if ! getent ahostsv4 "$AWG_PPA_HOST" >/dev/null 2>&1; then
-        echo "DNS сервера не разрешает $AWG_PPA_HOST — узнаю его адрес через DNS-over-HTTPS (1.1.1.1, 8.8.8.8)"
-        ip=$(awg_doh_ip)
-        if [ -n "$ip" ]; then
-            awg_hosts_cleanup
-            echo "$ip $AWG_PPA_HOST # vpngramm-tmp" >> "$AWG_HOSTS"
-            echo "Временно: $AWG_PPA_HOST → $ip (строка в $AWG_HOSTS уберётся после установки)"
-            out=$(apt-get -q update 2>&1) || true
-            if awg_ppa_ready; then return 0; fi
-            reason=$(awg_reason "$out")
-            awg_hosts_cleanup
-        else
-            reason="${reason:-DNS сервера не разрешает имя}, а DNS-over-HTTPS тоже недоступен"
-        fi
+    local rc=0
+    awg_hosts_pin "$AWG_PPA_HOST" || rc=$?
+    if [ "$rc" -eq 0 ]; then
+        out=$(apt-get -q update 2>&1) || true
+        if awg_ppa_ready; then return 0; fi
+        reason=$(awg_reason "$out")
+        awg_hosts_cleanup
+    elif [ "$rc" -eq 2 ]; then
+        reason="${reason:-DNS сервера не разрешает имя}, а DNS-over-HTTPS тоже недоступен"
     fi
-    echo "ОШИБКА: сервер не может открыть репозиторий Amnezia ($AWG_PPA_HOST): ${reason:-пакеты amneziawg не найдены}." \
-        "Проверьте DNS сервера (/etc/resolv.conf) или повторите установку позже — ядро уже обновлено, перезагрузки не будет."
+    echo "Репозиторий Amnezia недоступен с этого сервера ($AWG_PPA_HOST): ${reason:-пакеты amneziawg не найдены}."
     return 1
 }

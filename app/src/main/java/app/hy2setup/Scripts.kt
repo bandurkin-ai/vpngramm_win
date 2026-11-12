@@ -999,9 +999,14 @@ ${firewall()}
     val awgRepoScript: String by lazy {
         Scripts::class.java.getResourceAsStream("/hy2setup/awg-repo.sh")!!.bufferedReader().use { it.readText() }
     }
+    /** Запасная сборка AmneziaWG из исходников на GitHub (ресурс hy2setup/awg-github.sh), когда Launchpad недоступен. */
+    val awgGithubScript: String by lazy {
+        Scripts::class.java.getResourceAsStream("/hy2setup/awg-github.sh")!!.bufferedReader().use { it.readText() }
+    }
+    private val awgPrelude get() = awgRepoScript + "\n" + awgGithubScript + "\ntrap awg_hosts_cleanup EXIT\n"
 
     /** Полный скрипт установки AmneziaWG (тело фоновой задачи) — для проверки в тестах. */
-    internal fun awgJobBodyForTest(p: AwgParams): String = jobBody(awgRepoScript + "\ntrap awg_hosts_cleanup EXIT\n" + awgBody(p))
+    internal fun awgJobBodyForTest(p: AwgParams): String = jobBody(awgPrelude + awgBody(p))
 
     /** Тело установки AmneziaWG (без подготовки репозитория — она в [awgRepoScript]). */
     private fun awgBody(p: AwgParams): String {
@@ -1051,8 +1056,14 @@ ${firewall()}
             esac
             echo "deb [signed-by=/etc/apt/keyrings/amnezia-ppa.gpg] https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu ${'$'}C main" \
                 > /etc/apt/sources.list.d/amnezia-ppa.list
-            # повторы и обход сбоя DNS (awg-repo.sh); без пакетов из PPA дальше идти бессмысленно
-            awg_repo_prepare || exit 1
+            # повторы и обход сбоя DNS (awg-repo.sh); если Launchpad недоступен совсем — сборка из исходников с GitHub (awg-github.sh)
+            AWG_FROM=ppa
+            if ! awg_repo_prepare; then
+                AWG_FROM=github
+                rm -f /etc/apt/sources.list.d/amnezia-ppa.list
+                apt-get -q update >/dev/null 2>&1 || true
+                echo "Поставлю AmneziaWG из исходников Amnezia на GitHub."
+            fi
 
             step "Сборка модуля ядра AmneziaWG (DKMS) — несколько минут"
             HDR="linux-headers-${'$'}KVER"
@@ -1060,7 +1071,16 @@ ${firewall()}
                 case "${'$'}KVER" in *-cloud-*) HDR="linux-headers-cloud-${'$'}ARCH";; *) HDR="linux-headers-${'$'}ARCH";; esac
                 [ "${'$'}ID" = ubuntu ] && HDR=linux-headers-generic
             fi
-            apt-get -q -y -o Dpkg::Use-Pty=0 install dkms build-essential "${'$'}HDR" amneziawg-dkms amneziawg-tools
+            if [ "${'$'}AWG_FROM" = ppa ]; then
+                apt-get -q -y -o Dpkg::Use-Pty=0 install dkms build-essential "${'$'}HDR" amneziawg-dkms amneziawg-tools
+            else
+                apt-get -q -y -o Dpkg::Use-Pty=0 install dkms build-essential "${'$'}HDR" git
+                if ! awg_github_install "${'$'}KVER"; then
+                    echo "ОШИБКА: AmneziaWG не установить: сервер не открывает ни репозиторий Amnezia (Launchpad), ни GitHub. " \
+                        "Проверьте сеть и DNS сервера (/etc/resolv.conf) или повторите позже — ядро уже обновлено, перезагрузки не будет."
+                    exit 1
+                fi
+            fi
             awg_hosts_cleanup
             if ! modprobe amneziawg; then
                 echo "ОШИБКА: модуль AmneziaWG собран, но не загрузился. Частая причина — Secure Boot у VPS."
@@ -1104,7 +1124,7 @@ ${firewall()}
 
     /** Установка AmneziaWG фоновой задачей. Подготовка репозитория — общий фрагмент (проверяется тестом); временную строку hosts убираем при любом выходе. */
     fun installAwg(p: AwgParams): String =
-        jobStart("awg", jobBody(awgRepoScript + "\ntrap awg_hosts_cleanup EXIT\n" + awgBody(p)), "Установка AmneziaWG уже идёт")
+        jobStart("awg", jobBody(awgPrelude + awgBody(p)), "Установка AmneziaWG уже идёт")
 
     const val FACT_MARKER = "##FACT|"
 

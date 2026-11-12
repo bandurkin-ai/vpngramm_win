@@ -224,7 +224,7 @@ fun VpsCard(vm: MainViewModel, startExpanded: Boolean = false) {
 /** Сервер блока «Произвольный VPS»: список запомненных чужих серверов, адрес, порт, пользователь, пароль или ключ. */
 @Composable
 private fun VpsServerCard(vm: MainViewModel) {
-    val keyPicker = rememberOpenDoc { vm.vpsLoadKeyFrom(it) }
+    val keyPicker = rememberOpenKeyDoc { vm.vpsLoadKeyFrom(it) }
     val target = vm.vpsHost.trim()
     var pick by remember { mutableStateOf(false) }
     var toForget by remember { mutableStateOf<ServerProfile?>(null) }

@@ -55,8 +55,21 @@ fun rememberSaveDoc(onPicked: (Doc) -> Unit): (name: String) -> Unit = { name ->
     pickFile("Сохранить копию", FileDialog.SAVE, name)?.let { onPicked(FileDoc(it)) }
 }
 
-private fun pickFile(title: String, mode: Int, name: String?): File? {
+/** Выбор файла SSH-ключа: диалог открывается в папке ключей текущего пользователя (%USERPROFILE%\.ssh). */
+@Composable
+fun rememberOpenKeyDoc(onPicked: (Doc) -> Unit): () -> Unit = {
+    pickFile("Выберите файл ключа", FileDialog.LOAD, null, sshKeyDir())?.let { onPicked(FileDoc(it)) }
+}
+
+/** Папка SSH-ключей пользователя: .ssh в профиле; если её нет — сам профиль. */
+internal fun sshKeyDir(home: String = System.getenv("USERPROFILE")?.takeIf { it.isNotBlank() } ?: System.getProperty("user.home")): File {
+    val ssh = File(home, ".ssh")
+    return if (ssh.isDirectory) ssh else File(home)
+}
+
+private fun pickFile(title: String, mode: Int, name: String?, dir: File? = null): File? {
     val d = FileDialog(DesktopWindow.frame, title, mode)
+    if (dir != null) d.directory = dir.absolutePath
     if (name != null) d.file = name
     d.isVisible = true
     val file = d.file ?: return null

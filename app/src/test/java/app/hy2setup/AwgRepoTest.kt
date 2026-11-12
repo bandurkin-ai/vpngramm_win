@@ -98,8 +98,8 @@ class AwgRepoTest {
         linuxOnly()
         val r = run(readyAfter = 0, dns = false, doh = "")
         assertNotEquals(0, r.code)
-        assertTrue(r.out, r.out.contains("ОШИБКА: сервер не может открыть репозиторий Amnezia"))
-        assertTrue(r.out, r.out.contains("перезагрузки не будет"))
+        assertTrue(r.out, r.out.contains("Репозиторий Amnezia недоступен с этого сервера"))
+        assertTrue(r.out, r.out.contains("DNS-over-HTTPS тоже недоступен"))
         assertFalse(r.hostsAfterExit.contains("vpngramm-tmp"))
     }
 
@@ -109,10 +109,11 @@ class AwgRepoTest {
         val r = run(readyAfter = 0, dns = true)
         assertNotEquals(0, r.code)
         assertFalse(r.out, r.out.contains("DNS-over-HTTPS"))   // DNS в порядке — обход не нужен
-        assertTrue(r.out, r.out.contains("ОШИБКА: сервер не может открыть репозиторий Amnezia"))
+        // причина — как в журнале с сервера: Launchpad не отвечает по 443
+        assertTrue(r.out, r.out.contains("Репозиторий Amnezia недоступен с этого сервера (ppa.launchpadcontent.net): Temporary failure"))
     }
 
-    /** Полный скрипт установки AmneziaWG синтаксически верен и вызывает подготовку репозитория до сборки модуля. */
+    /** Полный скрипт установки AmneziaWG синтаксически верен; без Launchpad — сборка с GitHub, а не обрыв. */
     @Test
     fun fullAwgScriptIsValid() {
         linuxOnly()
@@ -121,7 +122,11 @@ class AwgRepoTest {
         p.outputStream.use { it.write(s.toByteArray()) }
         val out = p.inputStream.bufferedReader().readText()
         assertEquals(out, 0, p.waitFor())
-        assertTrue(s.indexOf("awg_repo_prepare || exit 1") in 1 until s.indexOf("install dkms build-essential"))
+        val prepare = s.indexOf("if ! awg_repo_prepare; then")
+        assertTrue(prepare in 1 until s.indexOf("install dkms build-essential"))
+        assertTrue(s.indexOf("rm -f /etc/apt/sources.list.d/amnezia-ppa.list") > prepare)   // недоступный PPA не мешает apt дальше
+        assertTrue(s.indexOf("awg_github_install \"${'$'}KVER\"") > s.indexOf("install dkms build-essential \"${'$'}HDR\" git"))
+        assertTrue(s.indexOf("awg_github_install() {") in 1 until prepare)
         assertTrue(s.contains("trap awg_hosts_cleanup EXIT"))
     }
 }

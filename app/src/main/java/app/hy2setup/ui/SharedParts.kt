@@ -123,7 +123,7 @@ fun ServerHostField(vm: MainViewModel) {
  */
 @Composable
 fun SshAccessCard(vm: MainViewModel, startExpanded: Boolean? = null) {
-    val keyPicker = rememberOpenDoc { vm.loadKeyFrom(it) }
+    val keyPicker = rememberOpenKeyDoc { vm.loadKeyFrom(it) }
     val target = vm.host.trim()
     val home = vm.stableProfiles.firstOrNull { it.fqdn == vm.accessTarget }
     var pick by remember { mutableStateOf(false) }
