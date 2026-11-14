@@ -607,6 +607,8 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         launchTask(log) {
             resultLinks.clear()
             if (skipHarden) addLog(log, "Защита пропущена: для неё нужен SSH-ключ (блок «Сервер» → «SSH-ключ»). VPN ставится, вход по паролю остаётся.")
+            addLog(log, "Проверяю систему сервера…")
+            checkLinux(ssh, log)
             val total = jobs.size + if (dnsPlan != null) 1 else 0
             var n = 1
             var dns: DnsDone? = null
@@ -642,6 +644,27 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         }
     }
 
+    /**
+     * Проверка системы сервера при входе: дистрибутив, версия, ядро, служба init, менеджер пакетов. Установка идёт
+     * дальше только на поддерживаемых системах (Debian 11+, Ubuntu 22.04+, Alpine); скрипты подстраиваются сами.
+     */
+    /** Система сервера, на который идёт текущая установка (определена при входе). */
+    private var serverOs: LinuxInfo? = null
+
+    private suspend fun checkLinux(cfg: SshConfig, target: SnapshotStateList<String>): LinuxInfo {
+        val found = java.util.concurrent.atomic.AtomicReference<LinuxInfo?>(null)
+        val code = runner.runScript(cfg, Scripts.osProbe()) { line ->
+            val info = LinuxInfo.parse(line)
+            if (info != null) found.set(info) else if (!Links.isMarker(line)) postLog(target, line)
+        }
+        val info = found.get() ?: throw IllegalStateException("Не удалось определить систему сервера (код $code) — проверьте, что вход выполняется от root.")
+        addLog(target, "Система сервера: ${info.describe()}")
+        serverOs = info
+        info.problem()?.let { throw IllegalStateException(it) }
+        info.notes().forEach { addLog(target, it) }
+        return info
+    }
+
     /** Порт AmneziaWG из поля или null с сообщением об ошибке. */
     private fun awgPortOrNull(onError: (String) -> Unit): Int? {
         val n = awgPort.trim().toIntOrNull()
@@ -672,7 +695,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
     private suspend fun awgInstall(ssh: SshConfig, p: AwgParams, target: SnapshotStateList<String>) {
         repeat(2) {
             val reboot = AtomicBoolean(false)
-            val code = BackgroundJob(runner) { postLog(target, it) }.run(ssh, "awg", Scripts.installAwg(p), "Установка AmneziaWG") { line ->
+            val code = BackgroundJob(runner) { postLog(target, it) }.run(ssh, "awg", Scripts.installAwg(p, alpine = serverOs?.isAlpine == true), "Установка AmneziaWG") { line ->
                 if (line.trim() == Scripts.AWG_REBOOT) { reboot.set(true); true } else false
             }
             if (code != 0) throw IllegalStateException("Установка AmneziaWG завершилась с ошибкой (код $code).")
@@ -2556,8 +2579,12 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                 addLog(plusLog, "✓ Сервер $ip добавлен в «Свободные серверы»" + facts["os"]?.takeIf { it.isNotEmpty() }?.let { " ($it)" }.orEmpty() +
                     ". Переехать на него: «Заменить сервер» → «Свободный сервер».")
                 if (srv.protocols.isNotEmpty()) addLog(plusLog, "На нём уже стоят: ${srv.protocols.joinToString()} — при переезде они будут заменены протоколами вашего сервера.")
-                if (facts["apt"] == "no") addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: на сервере нет apt (не Debian/Ubuntu) — часть протоколов может не установиться.")
-                if (facts["systemd"] == "no") addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: на сервере нет systemd — протоколы на него не установятся.")
+                when (facts["os_support"]) {
+                    "old" -> addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: система слишком старая — поддерживаются Debian 11+, Ubuntu 22.04+, Alpine; протоколы на него не установятся.")
+                    "other" -> addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: система не из списка проверенных (Debian 11+, Ubuntu 22.04+, Alpine) — часть протоколов может не установиться.")
+                }
+                if (facts["init"] == "none") addLog(plusLog, "ПРЕДУПРЕЖДЕНИЕ: на сервере нет ни systemd, ни OpenRC — протоколы на него не установятся.")
+                facts["kernel"]?.takeIf { it.isNotEmpty() }?.let { addLog(plusLog, "Ядро: $it") }
                 clearFreeForm()
                 onDone()
             } catch (e: CancellationException) {
@@ -2936,6 +2963,9 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     savePlusProfile(profile)
                     done(PlusStep.BOOT)
                 }
+
+                // система нового сервера: подходит ли, какое ядро (под неё подстраиваются скрипты установки)
+                checkLinux(ssh, plusLog)
 
                 // 3. DNS → новый IP
                 step(PlusStep.DNS)

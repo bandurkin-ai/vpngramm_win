@@ -61,7 +61,16 @@ object Scripts {
     /** Маркер, по которому приложение вытаскивает отпечаток сертификата из вывода. */
     const val PIN_MARKER = "##PIN="
 
-    private val HEADER = """
+    /** Определение системы (Debian, Ubuntu, Alpine), её ядра, менеджера пакетов и служб — общий слой всех скриптов (ресурс os-lib.sh). */
+    internal val osLib: String by lazy { slimResource("/hy2setup/os-lib.sh") }
+
+    /** Ресурс-скрипт без строк-комментариев: передача по SSH должна оставаться короткой (после ~16 КБ мобильные сети «замораживают»). */
+    private fun slimResource(path: String): String =
+        Scripts::class.java.getResourceAsStream(path)!!.bufferedReader().use { it.readText() }
+            .lines().filterNot { it.trimStart().startsWith("# ") || it.trim() == "#" || it.isBlank() }.joinToString("\n") + "\n"
+
+    /** Начало скрипта без общего слоя: для коротких служебных скриптов, которые не зависят от системы (фоновые задачи читают журнал). */
+    private val HEADER_LIGHT = """
         #!/bin/bash
         trap 'rm -f "${'$'}0"' EXIT
         exec </dev/null
@@ -69,6 +78,8 @@ object Scripts {
         step() { echo; echo "==> ${'$'}1"; }
         if [ "${'$'}(id -u)" != "0" ]; then echo "ОШИБКА: нужны права root"; exit 1; fi
     """.trimIndent()
+
+    private val HEADER: String by lazy { HEADER_LIGHT + "\n" + osLib }
 
     /** Блок auth для config.yaml: один пароль или userpass для нескольких людей (с отступом heredoc). */
     internal fun hy2Auth(p: InstallParams): String {
@@ -101,27 +112,17 @@ object Scripts {
         ACME_HTTP=${if (p.acmeHttp) 1 else 0}
         ACME_DIR=/var/lib/hysteria/acme
 
-        step "Проверка системы"
-        if ! command -v systemctl >/dev/null 2>&1; then
-            echo "ОШИБКА: нужен systemd (Ubuntu/Debian/CentOS и т.п.)"; exit 1
-        fi
-        pkg_install() {
-            if command -v apt-get >/dev/null 2>&1; then
-                apt-get -o DPkg::Lock::Timeout=600 update -qq && apt-get -o DPkg::Lock::Timeout=600 install -y -qq "${'$'}@"
-            elif command -v dnf >/dev/null 2>&1; then
-                dnf install -y -q "${'$'}@"
-            elif command -v yum >/dev/null 2>&1; then
-                yum install -y -q "${'$'}@"
-            else
-                echo "ОШИБКА: не найден менеджер пакетов, установите вручную: ${'$'}@"; exit 1
-            fi
-        }
+        os_require
         command -v curl >/dev/null 2>&1 || pkg_install curl ca-certificates
         command -v openssl >/dev/null 2>&1 || pkg_install openssl
         echo "OK"
 
-        step "Установка Hysteria2 (официальный скрипт get.hy2.sh)"
-        TERM=xterm bash <(curl -fsSL https://get.hy2.sh/)
+        step "Установка Hysteria2"
+        if [ "${'$'}INIT" = openrc ]; then
+            hy2_openrc_install || true
+        else
+            TERM=xterm bash <(curl -fsSL https://get.hy2.sh/)
+        fi
         if ! [ -x /usr/local/bin/hysteria ]; then
             echo "ОШИБКА: Hysteria2 не установилась — не удалось скачать установщик (get.hy2.sh). Проверьте интернет на сервере."
             exit 1
@@ -199,9 +200,11 @@ ${firewall()}
 
         step "Запуск службы hysteria-server"
         # Hysteria завершается, если сертификат ещё не выдан (DNS не обновился) — пусть systemd повторяет
-        mkdir -p /etc/systemd/system/hysteria-server.service.d
-        printf '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestart=on-failure\nRestartSec=30\n' \
-            > /etc/systemd/system/hysteria-server.service.d/hy2setup.conf
+        if [ "${'$'}INIT" = systemd ]; then
+            mkdir -p /etc/systemd/system/hysteria-server.service.d
+            printf '[Unit]\nStartLimitIntervalSec=0\n\n[Service]\nRestart=on-failure\nRestartSec=30\n' \
+                > /etc/systemd/system/hysteria-server.service.d/hy2setup.conf
+        fi
         systemctl daemon-reload
         systemctl enable hysteria-server.service >/dev/null 2>&1 || true
         systemctl restart hysteria-server.service
@@ -250,6 +253,7 @@ ${firewall()}
                         iptables -I INPUT -p "${'$'}{P#*/}" --dport "${'$'}{P%/*}" -j ACCEPT
                 done
                 if command -v netfilter-persistent >/dev/null 2>&1; then netfilter-persistent save >/dev/null 2>&1 || true
+                elif [ -f /etc/init.d/iptables ]; then /etc/init.d/iptables save >/dev/null 2>&1 || true
                 elif [ -d /etc/iptables ]; then iptables-save > /etc/iptables/rules.v4
                 elif [ -f /etc/sysconfig/iptables ]; then iptables-save > /etc/sysconfig/iptables
                 fi
@@ -555,21 +559,7 @@ ${firewall()}
         XRAY=/usr/local/bin/xray
         CONF=/usr/local/etc/xray/config.json
 
-        step "Проверка системы"
-        if ! command -v systemctl >/dev/null 2>&1; then
-            echo "ОШИБКА: нужен systemd (Ubuntu/Debian/CentOS и т.п.)"; exit 1
-        fi
-        pkg_install() {
-            if command -v apt-get >/dev/null 2>&1; then
-                apt-get -o DPkg::Lock::Timeout=600 update -qq && apt-get -o DPkg::Lock::Timeout=600 install -y -qq "${'$'}@"
-            elif command -v dnf >/dev/null 2>&1; then
-                dnf install -y -q "${'$'}@"
-            elif command -v yum >/dev/null 2>&1; then
-                yum install -y -q "${'$'}@"
-            else
-                echo "ОШИБКА: не найден менеджер пакетов, установите вручную: ${'$'}@"; exit 1
-            fi
-        }
+        os_require
         command -v curl >/dev/null 2>&1 || pkg_install curl ca-certificates
         command -v openssl >/dev/null 2>&1 || pkg_install openssl
         command -v unzip >/dev/null 2>&1 || pkg_install unzip
@@ -579,13 +569,21 @@ ${firewall()}
         fi
         echo "OK"
 
-        step "Установка Xray (официальный скрипт XTLS/Xray-install)"
+        step "Установка Xray"
         # установщик вызывает tput под set -e; в SSH-сессии без терминала TERM не задан
         # последняя версия — по редиректу github.com/…/releases/latest: установщик сам спрашивает api.github.com
         # и иногда не может разобрать ответ («Failed to get the latest release version»); с --version он туда не ходит
         XTAG=${'$'}(curl -fsSI --max-time 20 https://github.com/XTLS/Xray-core/releases/latest 2>/dev/null \
             | tr -d '\r' | sed -n 's#^[Ll]ocation: .*/tag/\(v[0-9][0-9.]*\)$#\1#p' | head -1)
         XOK=0
+        if [ "${'$'}INIT" = openrc ]; then
+            for TRY in 1 2 3; do
+                xray_openrc_install "${'$'}{XTAG}" && XOK=1
+                [ "${'$'}{XOK}" = "1" ] && [ -x "${'$'}{XRAY}" ] && break
+                XOK=0
+                if [ "${'$'}{TRY}" -lt 3 ]; then echo "Установка Xray не удалась (попытка ${'$'}{TRY} из 3), повтор через 15 с…"; sleep 15; fi
+            done
+        else
         for TRY in 1 2 3; do
             XI=${'$'}(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh) || XI=""
             if [ -z "${'$'}{XI}" ]; then
@@ -600,6 +598,7 @@ ${firewall()}
             XOK=0
             if [ "${'$'}{TRY}" -lt 3 ]; then echo "Установка Xray не удалась (попытка ${'$'}{TRY} из 3), повтор через 15 с…"; sleep 15; fi
         done
+        fi
         if [ "${'$'}{XOK}" != "1" ] || ! [ -x "${'$'}{XRAY}" ]; then
             echo "ОШИБКА: Xray не установился — не удалось скачать установщик или Xray с GitHub. Проверьте интернет на сервере."
             echo "Можно повторить: «Обновить сервер» на Главной или «Установить» ещё раз — ключи и ссылки не изменятся."
@@ -663,6 +662,7 @@ ${if (p.xhttpPath.isEmpty()) "" else "            , { \"listen\": \"$XHTTP_SOCKE
         # журнал подключений — для «Проверить сервер» (видно, доходит ли трафик телефона)
         mkdir -p /var/log/xray && touch /var/log/xray/access.log
         chown -R "${'$'}{XUSER}:${'$'}(id -gn "${'$'}{XUSER}")" /var/log/xray
+        mkdir -p /etc/logrotate.d
         printf '/var/log/xray/access.log {\n    weekly\n    rotate 2\n    missingok\n    notifempty\n    copytruncate\n}\n' \
             > /etc/logrotate.d/hy2setup-xray
         if ! TEST=${'$'}(${'$'}{XRAY} run -test -c "${'$'}{CONF}" 2>&1); then
@@ -742,7 +742,7 @@ ${firewall()}
         Protocol.HY2 -> """
             step "Остановка и удаление Hysteria2"
             systemctl disable --now hysteria-server.service >/dev/null 2>&1 || true
-            bash <(curl -fsSL https://get.hy2.sh/) --remove || true
+            if [ "${'$'}INIT" = openrc ]; then rm -f /etc/init.d/hysteria-server /usr/local/bin/hysteria; else bash <(curl -fsSL https://get.hy2.sh/) --remove || true; fi
             rm -rf /etc/hysteria /etc/systemd/system/hysteria-server.service.d/hy2setup.conf
             systemctl daemon-reload 2>/dev/null || true
             if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
@@ -751,7 +751,7 @@ ${firewall()}
         Protocol.VLESS -> """
             step "Остановка и удаление Xray (VLESS)"
             systemctl disable --now xray.service >/dev/null 2>&1 || true
-            TERM=xterm bash -c "${'$'}(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ remove --purge || true
+            if [ "${'$'}INIT" = openrc ]; then rm -f /etc/init.d/xray /usr/local/bin/xray; else TERM=xterm bash -c "${'$'}(curl -fsSL https://raw.githubusercontent.com/XTLS/Xray-install/main/install-release.sh)" @ remove --purge || true; fi
             rm -rf /usr/local/etc/xray
             if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
             step "Готово."
@@ -759,7 +759,7 @@ ${firewall()}
         Protocol.AWG -> """
             step "Остановка и удаление AmneziaWG"
             systemctl disable --now awg-quick@awg0.service >/dev/null 2>&1 || true
-            rm -f /etc/amnezia/amneziawg/awg0.conf $AWG_META
+            rm -f /etc/amnezia/amneziawg/awg0.conf $AWG_META /etc/init.d/awg-quick-awg0
             echo "Конфигурация удалена (пакеты amneziawg остались — они ничего не делают без конфигурации)."
             if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
             step "Готово."
@@ -864,6 +864,16 @@ ${firewall()}
         EOF
             systemctl enable --now unattended-upgrades >/dev/null 2>&1 || true
             echo "Автообновления безопасности включены."
+        elif command -v apk >/dev/null 2>&1; then
+            apk update
+            apk upgrade
+            step "Включение автообновлений (apk upgrade раз в сутки)"
+            mkdir -p /etc/periodic/daily
+            printf '#!/bin/sh\napk -q update && apk -q upgrade\n' > /etc/periodic/daily/vpngramm-apk-upgrade
+            chmod 755 /etc/periodic/daily/vpngramm-apk-upgrade
+            rc-update add crond default >/dev/null 2>&1 || true
+            rc-service crond start >/dev/null 2>&1 || true
+            echo "Автообновления включены."
         elif command -v dnf >/dev/null 2>&1; then
             dnf -y upgrade
             step "Включение автообновлений (dnf-automatic)"
@@ -889,7 +899,10 @@ ${firewall()}
             echo "$REBOOT_MARKER"
         elif command -v needs-restarting >/dev/null 2>&1 && ! needs-restarting -r >/dev/null 2>&1; then
             echo "Обновления требуют перезагрузки."
-            echo "$REBOOT_MARKER"
+            echo "${'$'}REBOOT_MARKER"
+        elif command -v apk >/dev/null 2>&1 && [ -d /lib/modules ] && [ -n "${'$'}(ls -1 /lib/modules 2>/dev/null)" ] && ! ls -1 /lib/modules | grep -qx "${'$'}(uname -r)"; then
+            echo "Обновления требуют перезагрузки."
+            echo "${'$'}REBOOT_MARKER"
         fi
     """.trimIndent()
 
@@ -909,7 +922,7 @@ ${firewall()}
     /** Тело фонового скрипта: bash с set -e и функцией step. */
     private fun jobBody(body: String) = "#!/bin/bash\nset -e\nexec </dev/null\n" +
         "export DEBIAN_FRONTEND=noninteractive NEEDRESTART_MODE=a NEEDRESTART_SUSPEND=1\n" +
-        "step() { echo; echo \"==> ${'$'}1\"; }\n" + body + "\n"
+        "step() { echo; echo \"==> ${'$'}1\"; }\n" + osLib + "\n" + body + "\n"
 
     /**
      * Запускает обновления отдельной службой systemd (hy2setup-upd): они идут на сервере, даже если SSH-соединение
@@ -927,7 +940,7 @@ ${firewall()}
     fun jobStart(name: String, body: String, busy: String): String {
         val log = "/root/.hy2setup-$name.log"
         val job = "#!/bin/bash\nbash /root/.hy2setup-$name-body.sh >> $log 2>&1\necho \"$UPD_DONE ${'$'}?\" >> $log\n"
-        return HEADER + "\n" + """
+        return HEADER_LIGHT + "\n" + """
             if systemctl is-active --quiet hy2setup-$name.service 2>/dev/null || pgrep -f "[h]y2setup-$name-[j]ob" >/dev/null 2>&1; then
                 echo "$busy — продолжаю следить за ним."
             else
@@ -951,7 +964,7 @@ ${firewall()}
      * не упираются в «заморозку» мобильных сетей), затем строку «[UPD_POS] новое_смещение состояние»,
      * где состояние — run, done:КОД или lost (задача пропала, например сервер перезагрузился).
      */
-    fun jobPoll(name: String, offset: Long): String = HEADER + "\n" + """
+    fun jobPoll(name: String, offset: Long): String = HEADER_LIGHT + "\n" + """
         LOG=/root/.hy2setup-$name.log
         OFF=$offset
         T=${'$'}(mktemp)
@@ -997,34 +1010,41 @@ ${firewall()}
      */
     /** Подготовка репозитория Amnezia (ресурс hy2setup/awg-repo.sh): повторы, обход сбоя DNS, понятная ошибка. */
     val awgRepoScript: String by lazy {
-        Scripts::class.java.getResourceAsStream("/hy2setup/awg-repo.sh")!!.bufferedReader().use { it.readText() }
+        slimResource("/hy2setup/awg-repo.sh")
     }
     /** Запасная сборка AmneziaWG из исходников на GitHub (ресурс hy2setup/awg-github.sh), когда Launchpad недоступен. */
     val awgGithubScript: String by lazy {
-        Scripts::class.java.getResourceAsStream("/hy2setup/awg-github.sh")!!.bufferedReader().use { it.readText() }
+        slimResource("/hy2setup/awg-github.sh")
     }
-    private val awgPrelude get() = awgRepoScript + "\n" + awgGithubScript + "\ntrap awg_hosts_cleanup EXIT\n"
+    /** Установка AmneziaWG на Alpine (ресурс hy2setup/awg-alpine.sh): amneziawg-go и утилиты из исходников. */
+    val awgAlpineScript: String by lazy {
+        slimResource("/hy2setup/awg-alpine.sh")
+    }
+    private fun awgPrelude(alpine: Boolean = false) =
+        awgRepoScript + "\n" + awgGithubScript + "\n" + (if (alpine) awgAlpineScript + "\n" else "") + "trap awg_hosts_cleanup EXIT\n"
 
     /** Полный скрипт установки AmneziaWG (тело фоновой задачи) — для проверки в тестах. */
-    internal fun awgJobBodyForTest(p: AwgParams): String = jobBody(awgPrelude + awgBody(p))
+    internal fun awgJobBodyForTest(p: AwgParams, alpine: Boolean = false): String = jobBody(awgPrelude(alpine) + awgBody(p, alpine))
 
     /** Тело установки AmneziaWG (без подготовки репозитория — она в [awgRepoScript]). */
-    private fun awgBody(p: AwgParams): String {
+    private fun awgBody(p: AwgParams, alpine: Boolean = false): String {
         val key = Scripts::class.java.getResourceAsStream("/hy2setup/amnezia-ppa.asc")!!.bufferedReader().use { it.readText() }
-        return """
+        val body = """
             PORT=${p.port}
-            step "Проверка системы"
-            command -v systemctl >/dev/null 2>&1 || { echo "ОШИБКА: нужен systemd"; exit 1; }
-            command -v apt-get >/dev/null 2>&1 || { echo "ОШИБКА: AmneziaWG ставится только на Debian/Ubuntu"; exit 1; }
+            os_require
+            case "${'$'}PKG" in apt|apk) ;; *) echo "ОШИБКА: AmneziaWG ставится только на Debian, Ubuntu и Alpine"; exit 1;; esac
             VIRT=${'$'}(systemd-detect-virt 2>/dev/null || true)
             case "${'$'}VIRT" in openvz|lxc|lxc-libvirt|docker|podman)
                 echo "ОШИБКА: VPS на контейнерной виртуализации (${'$'}VIRT) — модуль ядра AmneziaWG на нём не установить."; exit 1;;
             esac
             . /etc/os-release
-            ARCH=${'$'}(dpkg --print-architecture)
-            KVER=${'$'}(uname -r)
-            KMAJ=${'$'}(echo "${'$'}KVER" | cut -d. -f1); KMIN=${'$'}(echo "${'$'}KVER" | cut -d. -f2 | tr -cd '0-9')
+            ARCH=${'$'}(dpkg --print-architecture 2>/dev/null || echo "${'$'}ARCH_GO")
             echo "${'$'}PRETTY_NAME, ядро ${'$'}KVER, виртуализация ${'$'}{VIRT:-нет}"
+            if [ "${'$'}PKG" = apk ]; then
+                awg_alpine_install
+            else
+            :
+            #APT-BEGIN
             if [ "${'$'}ID" = debian ] && [ "${'$'}{VERSION_ID%%.*}" = 12 ] && { [ "${'$'}KMAJ" -lt 6 ] || { [ "${'$'}KMAJ" -eq 6 ] && [ "${'$'}KMIN" -lt 7 ]; }; }; then
                 step "Ядро ${'$'}KVER старее 6.7 — ставлю новое ядро из bookworm-backports"
                 grep -rqs "bookworm-backports" /etc/apt/sources.list /etc/apt/sources.list.d/ || \
@@ -1048,7 +1068,7 @@ ${firewall()}
             gpg --show-keys --with-colons /etc/apt/keyrings/amnezia-ppa.gpg 2>/dev/null | grep -q '75C9DD72C799870E310542E24166F2C257290828' || {
                 echo "ОШИБКА: ключ репозитория Amnezia не совпал с ожидаемым"; exit 1; }
             case "${'$'}ID:${'$'}{VERSION_CODENAME:-}" in
-                debian:bookworm) C=focal;;
+                debian:bullseye|debian:bookworm) C=focal;;
                 debian:*) C=noble;;
                 ubuntu:*) C=${'$'}VERSION_CODENAME
                     curl -fsI "https://ppa.launchpadcontent.net/amnezia/ppa/ubuntu/dists/${'$'}C/Release" >/dev/null 2>&1 || C=noble;;
@@ -1089,6 +1109,8 @@ ${firewall()}
             fi
             echo "Модуль: ${'$'}(cat /sys/module/amneziawg/version 2>/dev/null || echo ?), ${'$'}(awg --version 2>/dev/null | head -1)"
             echo amneziawg > /etc/modules-load.d/amneziawg.conf
+            #APT-END
+            fi
 
             step "Конфигурация AmneziaWG (порт ${'$'}PORT/UDP)"
             NIC=${'$'}(ip route get 1.1.1.1 | awk '{for(i=1;i<=NF;i++) if(${'$'}i=="dev") print ${'$'}(i+1)}' | head -1)
@@ -1120,11 +1142,13 @@ ${firewall()}
             if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
             echo "ВАЖНО: если у хостинга есть свой файрвол (Security Group), откройте там ${'$'}PORT/udp."
         """.trimIndent()
+        // на Alpine ветка apt/DKMS (и ключ репозитория Amnezia) не нужна — передача по SSH короче
+        return if (alpine) body.replace(Regex("(?s) *#APT-BEGIN.*? *#APT-END\\n"), "") else body.replace(Regex(" *#APT-(BEGIN|END)\\n"), "")
     }
 
     /** Установка AmneziaWG фоновой задачей. Подготовка репозитория — общий фрагмент (проверяется тестом); временную строку hosts убираем при любом выходе. */
-    fun installAwg(p: AwgParams): String =
-        jobStart("awg", jobBody(awgPrelude + awgBody(p)), "Установка AmneziaWG уже идёт")
+    fun installAwg(p: AwgParams, alpine: Boolean = false): String =
+        jobStart("awg", jobBody(awgPrelude(alpine) + awgBody(p, alpine)), "Установка AmneziaWG уже идёт")
 
     const val FACT_MARKER = "##FACT|"
 
@@ -1146,7 +1170,17 @@ ${firewall()}
         echo "${FACT_MARKER}protocols|${'$'}(echo ${'$'}P)"
         command -v apt-get >/dev/null 2>&1 && echo "${FACT_MARKER}apt|yes" || echo "${FACT_MARKER}apt|no"
         command -v systemctl >/dev/null 2>&1 && echo "${FACT_MARKER}systemd|yes" || echo "${FACT_MARKER}systemd|no"
+        echo "${FACT_MARKER}os_support|${'$'}{OS_SUPPORT}"
+        echo "${FACT_MARKER}init|${'$'}{INIT}"
+        echo "${FACT_MARKER}pkg|${'$'}{PKG}"
+        echo "${FACT_MARKER}kernel|${'$'}{KVER}"
     """.trimIndent()
+
+    /** Маркер со сведениями о системе сервера: «##OS|id|версия|ядро|init|пакеты|архитектура|поддержка|название». */
+    const val OS_MARKER = "##OS|"
+
+    /** Определяет систему и ядро сервера при входе (ничего не меняет): печатает [OS_MARKER] — см. [LinuxInfo]. */
+    fun osProbe(): String = HEADER + "\n" + "os_marker"
 
     /** Проверка входа: печатает маркер. */
     fun ping(): String = HEADER + "\n" + "echo \"$PING_MARKER\""
@@ -1242,13 +1276,32 @@ ${firewall()}
      */
     fun firewallApply(): String = HEADER + "\n" + """
         step "Файрвол: снаружи только SSH и порты VPN"
-        command -v systemctl >/dev/null 2>&1 || { echo "ОШИБКА: нужен systemd"; exit 1; }
+        [ "${'$'}INIT" != none ] || { echo "ОШИБКА: нужна система со службами systemd или OpenRC"; exit 1; }
         if ! command -v nft >/dev/null 2>&1; then
-            command -v apt-get >/dev/null 2>&1 || { echo "ОШИБКА: нет nftables и apt-get"; exit 1; }
-            apt-get install -y -q nftables >/dev/null || { echo "ОШИБКА: не удалось поставить nftables"; exit 1; }
+            pkg_install nftables >/dev/null || { echo "ОШИБКА: не удалось поставить nftables"; exit 1; }
         fi
         echo '${gzB64(fwScript)}' | base64 -d | gunzip > $FW_BIN
         chmod 755 $FW_BIN
+        if [ "${'$'}INIT" = openrc ]; then
+            cat > /etc/init.d/vpngramm-fw <<'ORC'
+        #!/sbin/openrc-run
+        description="vpngramm firewall (only SSH and VPN ports)"
+        depend() {
+            need localmount
+        }
+        start() {
+            ebegin "vpngramm firewall"
+            $FW_BIN apply
+            eend ${'$'}?
+        }
+        stop() {
+            ebegin "vpngramm firewall off"
+            $FW_BIN off
+            eend 0
+        }
+        ORC
+            chmod 755 /etc/init.d/vpngramm-fw
+        else
         cat > /etc/systemd/system/vpngramm-fw.service <<'UNIT'
         [Unit]
         Description=vpngramm firewall (only SSH and VPN ports)
@@ -1264,18 +1317,17 @@ ${firewall()}
         [Install]
         WantedBy=multi-user.target
         UNIT
+        fi
         systemctl daemon-reload
         # страховка: без подтверждения через 3 минуты правила снимутся
-        systemctl stop vpngramm-fw-rollback.timer vpngramm-fw-rollback.service 2>/dev/null || true
-        systemctl reset-failed vpngramm-fw-rollback.service 2>/dev/null || true
-        systemd-run --quiet --on-active=180 --unit=vpngramm-fw-rollback $FW_BIN off || { echo "ОШИБКА: не удалось поставить таймер отката — файрвол не включаю"; exit 1; }
+        sched_run vpngramm-fw-rollback 180 $FW_BIN off || { echo "ОШИБКА: не удалось поставить таймер отката — файрвол не включаю"; exit 1; }
         if ! $FW_BIN apply; then $FW_BIN off; exit 1; fi
         echo "Проверяю вход новым подключением; без подтверждения правила снимутся через 3 минуты."
     """.trimIndent()
 
     /** После успешного входа новым подключением: снять таймер отката и включать файрвол при загрузке. */
     fun firewallConfirm(): String = HEADER + "\n" + """
-        systemctl stop vpngramm-fw-rollback.timer vpngramm-fw-rollback.service 2>/dev/null || true
+        sched_cancel vpngramm-fw-rollback
         systemctl enable vpngramm-fw.service >/dev/null 2>&1
         systemctl start vpngramm-fw.service >/dev/null 2>&1 || true
         echo "✓ Файрвол vpngramm включён и будет включаться после перезагрузки."
@@ -1285,11 +1337,11 @@ ${firewall()}
     /** fail2ban: бан за перебор паролей SSH (5 ошибок за 10 минут — бан на час, повторно дольше). */
     fun fail2banInstall(): String = HEADER + "\n" + """
         step "fail2ban: бан за перебор паролей SSH"
-        command -v apt-get >/dev/null 2>&1 || { echo "ОШИБКА: fail2ban ставится только на Debian/Ubuntu"; exit 1; }
+        case "${'$'}PKG" in apt|apk) ;; *) echo "ОШИБКА: fail2ban ставится только на Debian, Ubuntu и Alpine"; exit 1;; esac
         if ! command -v fail2ban-client >/dev/null 2>&1 || ! command -v nft >/dev/null 2>&1; then
             for i in 1 2 3 4 5 6; do
-                apt-get install -y -q fail2ban python3-systemd nftables >/dev/null 2>&1 && break
-                echo "apt занят или недоступен — повтор через 20 с…"; sleep 20
+                { if [ "${'$'}PKG" = apk ]; then apk add --no-cache -q fail2ban fail2ban-openrc nftables; else apt-get install -y -q fail2ban python3-systemd nftables; fi; } >/dev/null 2>&1 && break
+                echo "Менеджер пакетов занят или недоступен — повтор через 20 с…"; sleep 20
             done
         fi
         command -v fail2ban-client >/dev/null 2>&1 || { echo "ОШИБКА: не удалось поставить fail2ban"; exit 1; }
@@ -1298,6 +1350,12 @@ ${firewall()}
         cat > /etc/fail2ban/jail.d/vpngramm.conf <<JAIL
         ${F2B_JAIL.joinToString("\n        ")}
         JAIL
+        if [ "${'$'}INIT" = openrc ]; then
+            # без journald: SSH пишет в syslog (/var/log/messages)
+            sed -i 's#^backend = systemd#backend = auto\nlogpath = /var/log/messages#' /etc/fail2ban/jail.d/vpngramm.conf
+            rc-update add syslog boot >/dev/null 2>&1 || true
+            rc-service syslog start >/dev/null 2>&1 || true
+        fi
         systemctl enable fail2ban >/dev/null 2>&1 || true
         systemctl restart fail2ban
         for i in 1 2 3 4 5; do fail2ban-client status sshd >/dev/null 2>&1 && break; sleep 2; done
@@ -1317,7 +1375,7 @@ ${firewall()}
     /** Перезагрузка через несколько секунд, чтобы SSH-сессия успела корректно закрыться. */
     fun reboot(): String = HEADER + "\n" + """
         step "Перезагрузка сервера"
-        nohup sh -c 'sleep 3; systemctl reboot' >/dev/null 2>&1 &
+        nohup sh -c 'sleep 3; reboot' >/dev/null 2>&1 &
         echo "Сервер перезагрузится через 3 секунды."
     """.trimIndent()
 
@@ -1345,17 +1403,7 @@ ${firewall()}
         PORT=$port
         FRONT='$frontDomain'
 
-        step "Проверка системы"
-        if ! command -v systemctl >/dev/null 2>&1; then
-            echo "ОШИБКА: нужен systemd (Ubuntu/Debian/CentOS и т.п.)"; exit 1
-        fi
-        pkg_install() {
-            if command -v apt-get >/dev/null 2>&1; then
-                apt-get -o DPkg::Lock::Timeout=600 update -qq && apt-get -o DPkg::Lock::Timeout=600 install -y -qq "${'$'}@"
-            elif command -v dnf >/dev/null 2>&1; then dnf install -y -q "${'$'}@"
-            elif command -v yum >/dev/null 2>&1; then yum install -y -q "${'$'}@"
-            else echo "ОШИБКА: не найден менеджер пакетов"; exit 1; fi
-        }
+        os_require
         command -v curl >/dev/null 2>&1 || pkg_install curl ca-certificates
         command -v tar >/dev/null 2>&1 || pkg_install tar
         case "${'$'}(uname -m)" in
@@ -1391,6 +1439,9 @@ ${firewall()}
         bind-to = "0.0.0.0:${'$'}{PORT}"
         EOF
         chmod 644 /etc/mtg.toml
+        if [ "${'$'}INIT" = openrc ]; then
+            OR_DELAY=3 openrc_service mtg "mtg MTProto proxy" /usr/local/bin/mtg run /etc/mtg.toml
+        else
         cat > /etc/systemd/system/mtg.service <<'EOF'
         [Unit]
         Description=mtg - MTProto proxy server
@@ -1408,6 +1459,7 @@ ${firewall()}
         [Install]
         WantedBy=multi-user.target
         EOF
+        fi
         echo "OK"
 
         FW_PORTS="${'$'}{PORT}/tcp"
@@ -1483,7 +1535,7 @@ ${firewall()}
     fun removeTelegram(): String = HEADER + "\n" + """
         step "Остановка и удаление Telegram-прокси (mtg)"
         systemctl disable --now mtg.service >/dev/null 2>&1 || true
-        rm -f /etc/systemd/system/mtg.service /usr/local/bin/mtg /etc/mtg.toml
+        rm -f /etc/systemd/system/mtg.service /etc/init.d/mtg /usr/local/bin/mtg /etc/mtg.toml
         systemctl daemon-reload || true
         if [ -x $FW_BIN ] && systemctl is-enabled --quiet vpngramm-fw.service 2>/dev/null; then $FW_BIN apply || true; fi
         step "Готово."

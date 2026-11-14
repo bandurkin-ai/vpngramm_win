@@ -1,4 +1,4 @@
-vpngramm 4.7.3 для Windows 11 (x64)
+vpngramm 4.7.5 для Windows 11 (x64)
 =================================
 
 vpngramm создаёт и обслуживает ваши VPN-серверы: покупка VPS в OneProvider,

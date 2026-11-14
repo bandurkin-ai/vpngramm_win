@@ -133,7 +133,7 @@ class ScriptsTest {
             .decode(Regex("echo '([A-Za-z0-9+/=]+)' \\| base64 -d \\| gunzip").find(x)!!.groupValues[1]).inputStream())
             .bufferedReader().readText()
         val collector = unpack(s)
-        assertTrue("сжатая проверка должна быть маленькой: ${s.length}", s.length < 6_000)
+        assertTrue("сжатая проверка должна быть маленькой: ${SshRunner.packed(s).length}", SshRunner.packed(s).length < 14_000)   // меньше ~16 КБ, после которых мобильные сети «замораживают» передачу
         assertTrue(collector.contains("SECS=90"))
         assertTrue("неправильный IP не подставляется", collector.contains("PHONE=''"))
         assertTrue(collector.contains("trap restore EXIT"))
@@ -142,7 +142,7 @@ class ScriptsTest {
 
     @Test
     fun bigScriptsArePacked() {
-        val small = Scripts.ping()
+        val small = "#!/bin/bash\necho ok\n"
         assertTrue(SshRunner.packed(small) == small)
         val big = Scripts.diagnose("vpn.example.com")
         val p = SshRunner.packed(big)

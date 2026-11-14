@@ -63,7 +63,7 @@ class SshRunner(
             }.toByteArray()
             val b64 = java.util.Base64.getEncoder().encodeToString(bytes)
             return "#!/bin/bash\n" +
-                "D=${'$'}(mktemp /tmp/.hy2setup-XXXXXX.sh) || exit 1\n" +
+                "D=${'$'}(mktemp /tmp/.hy2setup-XXXXXX) || exit 1\n" +
                 "echo '$b64' | base64 -d | gunzip > \"${'$'}D\" || { echo \"ОШИБКА: не удалось распаковать скрипт\"; rm -f \"${'$'}D\" \"${'$'}0\"; exit 1; }\n" +
                 "rm -f \"${'$'}0\"\n" +
                 "exec bash \"${'$'}D\"\n"
@@ -247,21 +247,44 @@ class SshRunner(
 
     private fun upload(session: Session, script: String, remotePath: String) {
         // на путях с «заморозкой после ~16 КБ» (ТСПУ) большие передачи обрываются, поэтому скрипты сжимаются
+        val bytes = script.toByteArray(Charsets.UTF_8)
         val sftp = session.openChannel("sftp") as ChannelSftp
         try {
             sftp.connect(10_000)
-            sftp.put(script.toByteArray(Charsets.UTF_8).inputStream(), remotePath)
+            sftp.put(bytes.inputStream(), remotePath)
             sftp.chmod("700".toInt(8), remotePath)
         } catch (e: Exception) {
-            throw SshException("Не удалось загрузить скрипт на сервер (SFTP): ${e.message}", e)
+            // на минимальных системах (Alpine без openssh-sftp-server) SFTP может не быть — пишем файл через обычную команду
+            try {
+                uploadViaExec(session, bytes, remotePath)
+            } catch (e2: Exception) {
+                throw SshException("Не удалось загрузить скрипт на сервер (SFTP: ${e.message}; команда: ${e2.message})", e)
+            }
         } finally {
             sftp.disconnect()
         }
     }
 
+    private fun uploadViaExec(session: Session, bytes: ByteArray, remotePath: String) {
+        val ch = session.openChannel("exec") as ChannelExec
+        ch.setCommand("umask 077; cat > '$remotePath' && chmod 700 '$remotePath'")
+        val out = ch.outputStream
+        ch.connect(10_000)
+        out.write(bytes)
+        out.flush()
+        out.close()
+        val deadline = System.currentTimeMillis() + 30_000
+        while (!ch.isClosed && System.currentTimeMillis() < deadline) Thread.sleep(50)
+        val code = ch.exitStatus
+        ch.disconnect()
+        if (code != 0) throw SshException("код $code")
+    }
+
     private fun exec(session: Session, cfg: SshConfig, remotePath: String, onLine: (String) -> Unit): Int {
         val needSudo = cfg.user != "root"
-        val command = if (needSudo) "sudo -S -p '' bash $remotePath 2>&1" else "bash $remotePath 2>&1"
+        // на Alpine bash по умолчанию нет — ставим его (скрипты написаны на bash), затем запускаем скрипт
+        val run = "sh -c 'command -v bash >/dev/null 2>&1 || apk add --no-cache -q bash >/dev/null 2>&1; exec bash $remotePath'"
+        val command = if (needSudo) "sudo -S -p '' $run 2>&1" else "$run 2>&1"
         val channel = session.openChannel("exec") as ChannelExec
         channel.setCommand(command)
         val reader = BufferedReader(InputStreamReader(channel.inputStream, Charsets.UTF_8))

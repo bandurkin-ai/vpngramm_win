@@ -96,7 +96,7 @@ class FirewallTest {
         assertTrue(Scripts.fail2banInstall().contains("\n[sshd]\nenabled = true\nport = \${SSHP:-22}\nbackend = systemd\nmaxretry = 5\n"))
         assertTrue(Scripts.fail2banInstall().contains("\nJAIL\n"))
         assertTrue(Scripts.firewallApply().contains("\nUNIT\n"))
-        assertTrue(Scripts.firewallApply().contains("--on-active=180"))
+        assertTrue(Scripts.firewallApply().contains("sched_run vpngramm-fw-rollback 180"))
     }
 
     @Test

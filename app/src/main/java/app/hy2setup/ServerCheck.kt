@@ -26,15 +26,17 @@ object ServerCheck {
         trap 'rm -f "${'$'}0"' EXIT
         exec </dev/null
         export DEBIAN_FRONTEND=noninteractive
+    """.trimIndent() + "\n" + Scripts.osLib + "\n" + """
         for S in ${SERVICES.values.joinToString(" ")}; do
             if systemctl cat "${'$'}S" >/dev/null 2>&1; then
                 echo "$SVC_MARKER${'$'}S|${'$'}(systemctl is-active "${'$'}S" 2>/dev/null)"
             fi
         done
         grep -q '^ *type: file' /etc/hysteria/config.yaml 2>/dev/null && echo "$SITE_MARKER"
-        if ! command -v vnstat >/dev/null 2>&1 && command -v apt-get >/dev/null 2>&1; then
+        if ! command -v vnstat >/dev/null 2>&1 && [ "${'$'}PKG" = apt -o "${'$'}PKG" = apk ]; then
             echo "Ставлю vnstat для учёта трафика…"
-            apt-get -o DPkg::Lock::Timeout=120 install -y -qq vnstat >/dev/null 2>&1 && systemctl enable --now vnstat >/dev/null 2>&1 || true
+            VN=vnstat; [ "${'$'}INIT" = openrc ] && VN=vnstatd
+            { [ "${'$'}PKG" = apk ] && apk add --no-cache -q vnstat || apt-get -o DPkg::Lock::Timeout=120 install -y -qq vnstat; } >/dev/null 2>&1 && systemctl enable --now "${'$'}VN" >/dev/null 2>&1 || true
         fi
         if command -v vnstat >/dev/null 2>&1; then
             echo "$VNSTAT_MARKER${'$'}(vnstat --json m 2>/dev/null | tr -d '\n' | base64 -w0)"
