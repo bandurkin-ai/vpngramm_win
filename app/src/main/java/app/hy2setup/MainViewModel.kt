@@ -50,6 +50,10 @@ private const val PLUS_PROFILE = "plusProfile"
 private const val STABLE_PROFILES = "stableProfiles"
 private const val ROLLBACK_KEY = "plusRollback"
 
+/** Запись, которая при переезде на новый IP переключается вместе с основной (зона, имя). */
+private const val MCP_ZONE = "aeromike.org"
+private const val MCP_HOST = "mcp"
+
 data class DnsPlan(
     val username: String,
     val token: String,
@@ -890,6 +894,17 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
         val created = client.createRecord(plan.zone, plan.subdomain, "A", ip, plan.ttl)
         addLog(target, "Создана запись: ${created.displayName.ifEmpty { plan.fqdn }} → $ip (A, TTL ${plan.ttl})")
         return ip
+    }
+
+    /** При переезде A-запись mcp.aeromike.org тоже уходит на новый IP. Сбой не прерывает переезд — только предупреждение. */
+    private suspend fun moveMcpRecord(ip: String, plan: DnsPlan, target: SnapshotStateList<String>) {
+        try {
+            setupDnsRecord(ip, DnsPlan(plan.username, plan.token, MCP_ZONE, MCP_HOST, plan.ttl), allowOverwrite = true, target = target, dropAaaa = true)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            addLog(target, "ПРЕДУПРЕЖДЕНИЕ: запись $MCP_HOST.$MCP_ZONE не обновлена (${e.message}). Исправьте её во вкладке «VPS/DNS».")
+        }
     }
 
     // =====================================================================
@@ -2705,6 +2720,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                     rb.oldIp, DnsPlan(ncUser.trim(), ncToken.trim(), before.zone, before.subdomain, ttlNum),
                     allowOverwrite = true, target = plusLog, dropAaaa = true,
                 )
+                moveMcpRecord(rb.oldIp, DnsPlan(ncUser.trim(), ncToken.trim(), before.zone, before.subdomain, ttlNum), plusLog)
             } else {
                 addLog(plusLog, "A-запись ${rb.fqdn} не менялась — DNS не трогаю.")
             }
@@ -2924,6 +2940,7 @@ class MainViewModel(private val platform: Platform) : BaseViewModel() {
                 // 3. DNS → новый IP
                 step(PlusStep.DNS)
                 setupDnsRecord(ip, plan, allowOverwrite = true, target = plusLog, dropAaaa = true)
+                moveMcpRecord(ip, plan, plusLog)
                 done(PlusStep.DNS)
 
                 // DNS не ждём: Let's Encrypt спрашивает серверы имён name.com, а они знают новую запись сразу.
